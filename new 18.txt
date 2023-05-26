@@ -1,0 +1,163 @@
+import boto3
+import json
+import requests
+
+def send_logs_to_splunk(event, context):
+    # Splunk HEC endpoint URL
+    splunk_url = "https://<YOUR_SPLUNK_HEC_ENDPOINT_URL>"
+
+    # Splunk HEC token
+    splunk_token = "<YOUR_SPLUNK_HEC_TOKEN>"
+    
+    # Get the CloudWatch log events from the event parameter
+    log_events = event["awslogs"]["data"]
+    decoded_logs = boto3.client("logs").decode_log_event(splunk_token, log_events)
+    
+    # Prepare the payload for Splunk
+    payload = {
+        "event": decoded_logs,
+        "sourcetype": "aws:cloudwatchlogs"
+    }
+    
+    # Send the logs to Splunk via HTTP POST request
+    response = requests.post(splunk_url, data=json.dumps(payload), headers={"Authorization": "Splunk " + splunk_token})
+    
+    if response.status_code != 200:
+        print("Failed to send logs to Splunk. Response code:", response.status_code)
+    else:
+        print("Logs successfully sent to Splunk.")
+
+====================================================================================================================================
+
+
+import json
+import boto3
+import requests
+
+def send_logs_to_splunk(event, context):
+    # Splunk HEC endpoint URL
+    splunk_url = "https://<YOUR_SPLUNK_HEC_ENDPOINT_URL>"
+
+    # Splunk HEC token
+    splunk_token = "<YOUR_SPLUNK_HEC_TOKEN>"
+    
+    # Get the CloudTrail log events from the event parameter
+    log_events = event["Records"]
+    
+    # Prepare the payload for Splunk
+    payload = {
+        "sourcetype": "aws:cloudtrail",
+        "event": []
+    }
+    
+    for log_event in log_events:
+        # Extract the CloudTrail event from the log event
+        cloudtrail_event = json.loads(log_event["Sns"]["Message"])
+        
+        # Add the CloudTrail event to the payload
+        payload["event"].append(cloudtrail_event)
+    
+    # Send the logs to Splunk via HTTP POST request
+    response = requests.post(
+        splunk_url,
+        data=json.dumps(payload),
+        headers={"Authorization": "Splunk " + splunk_token}
+    )
+    
+    if response.status_code != 200:
+        print("Failed to send logs to Splunk. Response code:", response.status_code)
+    else:
+        print("Logs successfully sent to Splunk.")
+
+
+=============================================================================================================================
+
+import json
+import boto3
+import requests
+
+def send_logs_to_splunk(event, context):
+    # Splunk HEC endpoint URL
+    splunk_url = "https://<YOUR_SPLUNK_HEC_ENDPOINT_URL>"
+
+    # Splunk HEC token
+    splunk_token = "<YOUR_SPLUNK_HEC_TOKEN>"
+    
+    # Get the VPC Flow Logs from the event parameter
+    log_events = event["awslogs"]["data"]
+    decoded_logs = boto3.client("logs").decode_log_event(log_events)
+    
+    # Prepare the payload for Splunk
+    payload = {
+        "event": decoded_logs,
+        "sourcetype": "aws:vpcflowlogs"
+    }
+    
+    # Send the logs to Splunk via HTTP POST request
+    response = requests.post(
+        splunk_url,
+        data=json.dumps(payload),
+        headers={"Authorization": "Splunk " + splunk_token}
+    )
+    
+    if response.status_code != 200:
+        print("Failed to send logs to Splunk. Response code:", response.status_code)
+    else:
+        print("Logs successfully sent to Splunk.")
+
+==================================================================================================================
+
+
+#!/bin/bash
+
+# Check if the SSM agent is running
+check_ssm_agent() {
+    status=$(systemctl is-active amazon-ssm-agent)
+    if [[ $status != "active" ]]; then
+        return 1
+    fi
+}
+
+# Start the SSM agent
+start_ssm_agent() {
+    sudo systemctl start amazon-ssm-agent
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+}
+
+# Restart the SSM agent
+restart_ssm_agent() {
+    sudo systemctl restart amazon-ssm-agent
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+}
+
+# Main script logic
+if check_ssm_agent; then
+    echo "SSM agent is already running."
+else
+    echo "SSM agent is not running. Starting..."
+    if start_ssm_agent; then
+        echo "SSM agent started successfully."
+    else
+        echo "Failed to start SSM agent."
+        exit 1
+    fi
+fi
+
+# Check if the SSM agent is reporting
+if ! /usr/bin/amazon-ssm-agent-cli status; then
+    echo "SSM agent is not reporting. Restarting..."
+    if restart_ssm_agent; then
+        echo "SSM agent restarted successfully."
+    else
+        echo "Failed to restart SSM agent."
+        exit 1
+    fi
+fi
+
+echo "SSM agent is running and reporting."
+
+
