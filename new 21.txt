@@ -1,0 +1,63 @@
+#!/bin/bash
+
+# Check if the SSM agent is running
+check_ssm_agent() {
+    status=$(systemctl is-active amazon-ssm-agent)
+    if [[ $status != "active" ]]; then
+        return 1
+    fi
+}
+
+# Install the SSM agent
+install_ssm_agent() {
+    wget https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm
+    sudo yum install -y amazon-ssm-agent.rpm
+    rm -f amazon-ssm-agent.rpm
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+}
+
+# Start the SSM agent
+start_ssm_agent() {
+    sudo systemctl start amazon-ssm-agent
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+}
+
+# Restart the SSM agent
+restart_ssm_agent() {
+    sudo systemctl restart amazon-ssm-agent
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+}
+
+# Main script logic
+if ! check_ssm_agent; then
+    echo "SSM agent is not running. Installing..."
+    if ! install_ssm_agent; then
+        echo "Failed to install SSM agent."
+        exit 1
+    fi
+fi
+
+if ! check_ssm_agent; then
+    echo "SSM agent is still not running."
+    exit 1
+fi
+
+echo "SSM agent is running."
+
+# Check if the SSM agent is reporting
+agent_status=$(amazon-ssm-agent-cli status | grep -i "status" | awk '{print $2}')
+if [[ "$agent_status" != "online" ]]; then
+    echo "SSM agent is not reporting. Restarting..."
+    if ! restart_ssm_agent; then
+        echo "Failed to restart SSM agent."
+        exit 1
+    fi
+fi
+
+echo "SSM agent is reporting."
