@@ -161,3 +161,66 @@ fi
 echo "SSM agent is running and reporting."
 
 
+==========================================================================
+
+import boto3
+
+def lambda_handler(event, context):
+    # Create a Cost Explorer client
+    ce_client = boto3.client('ce')
+    
+    # Specify the time range for the cost data (e.g., last month)
+    start_date = '2023-04-01'
+    end_date = '2023-04-30'
+    
+    # Get the top 20 resources based on cost
+    response = ce_client.get_cost_and_usage(
+        TimePeriod={'Start': start_date, 'End': end_date},
+        Granularity='MONTHLY',
+        Metrics=['BlendedCost'],
+        GroupBy=[
+            {
+                'Type': 'DIMENSION',
+                'Key': 'LINKED_ACCOUNT'
+            },
+            {
+                'Type': 'DIMENSION',
+                'Key': 'SERVICE'
+            },
+            {
+                'Type': 'DIMENSION',
+                'Key': 'REGION'
+            },
+            {
+                'Type': 'DIMENSION',
+                'Key': 'USAGE_TYPE'
+            }
+        ],
+        Filter={
+            'Dimensions': {
+                'Key': 'LINKED_ACCOUNT',
+                'Values': ['<YOUR_AWS_ACCOUNT_ID>']
+            }
+        },
+        SortBy=[
+            {
+                'Key': 'BlendedCost',
+                'SortOrder': 'DESCENDING'
+            }
+        ],
+        MaxResults=20
+    )
+    
+    # Process the response and extract the resource details
+    resources = []
+    for result in response['ResultsByTime'][0]['Groups']:
+        resource = {
+            'LinkedAccount': result['Keys'][0],
+            'Service': result['Keys'][1],
+            'Region': result['Keys'][2],
+            'UsageType': result['Keys'][3],
+            'Cost': result['Metrics']['BlendedCost']['Amount']
+        }
+        resources.append(resource)
+    
+    return resources
