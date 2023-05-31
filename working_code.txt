@@ -194,3 +194,51 @@ def send_to_splunk(log_event):
     else:
         print('Log event sent to Splunk successfully.')
 
+================================================================================================================================================
+
+import base64
+import json
+import boto3
+import requests
+
+# Configure Splunk endpoint and authentication
+SPLUNK_ENDPOINT = 'https://your-splunk-instance:8088/services/collector'
+SPLUNK_TOKEN = 'your-splunk-token'
+
+def lambda_handler(event, context):
+    # Create a Splunk event collector URL
+    splunk_url = SPLUNK_ENDPOINT + '/event'
+
+    # Process incoming Kinesis Data Stream records
+    for record in event['Records']:
+        # Decode the payload from base64
+        payload = base64.b64decode(record['kinesis']['data']).decode('utf-8')
+
+        # Parse the CloudWatch log event
+        log_event = json.loads(payload)
+
+        # Send the log event to Splunk
+        send_to_splunk(log_event, splunk_url)
+
+def send_to_splunk(log_event, splunk_url):
+    # Convert the log event to JSON string
+    log_event_json = json.dumps(log_event)
+
+    # Set up the headers and payload for the Splunk request
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Splunk ' + SPLUNK_TOKEN
+    }
+    payload = {
+        'event': log_event_json
+    }
+
+    # Send the log event to Splunk
+    response = requests.post(splunk_url, headers=headers, json=payload)
+
+    # Check the response status
+    if response.status_code != 200:
+        print('Failed to send log event to Splunk. Status code:', response.status_code)
+    else:
+        print('Log event sent to Splunk successfully.')
+
