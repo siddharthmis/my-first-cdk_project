@@ -1,0 +1,196 @@
+import json
+import boto3
+import requests
+
+# Configure Splunk endpoint and authentication
+SPLUNK_ENDPOINT = 'https://your-splunk-instance:8088/services/collector'
+SPLUNK_TOKEN = 'your-splunk-token'
+
+def lambda_handler(event, context):
+    # Create an SQS client
+    sqs = boto3.client('sqs')
+
+    # Retrieve the SQS queue URL
+    queue_url = 'your-sqs-queue-url'
+
+    # Receive messages from the SQS queue
+    response = sqs.receive_message(
+        QueueUrl=queue_url,
+        AttributeNames=['All'],
+        MaxNumberOfMessages=10,
+        MessageAttributeNames=['All'],
+        VisibilityTimeout=0,
+        WaitTimeSeconds=0
+    )
+
+    # Process received messages
+    if 'Messages' in response:
+        for message in response['Messages']:
+            # Extract the CloudWatch log event from the message
+            log_event = json.loads(message['Body'])['logEvent']
+
+            # Send the log event to Splunk
+            send_to_splunk(log_event)
+
+            # Delete the message from the SQS queue
+            sqs.delete_message(
+                QueueUrl=queue_url,
+                ReceiptHandle=message['ReceiptHandle']
+            )
+
+def send_to_splunk(log_event):
+    # Convert the log event to JSON string
+    log_event_json = json.dumps(log_event)
+
+    # Set up the headers and payload for the Splunk request
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Splunk ' + SPLUNK_TOKEN
+    }
+    payload = {
+        'event': log_event_json
+    }
+
+    # Send the log event to Splunk
+    response = requests.post(SPLUNK_ENDPOINT, headers=headers, json=payload)
+
+    # Check the response status
+    if response.status_code != 200:
+        print('Failed to send log event to Splunk. Status code:', response.status_code)
+    else:
+        print('Log event sent to Splunk successfully.')
+
+
+
+=========================================================================================================================================
+
+
+import json
+import boto3
+import requests
+
+# Configure Splunk endpoint and authentication
+SPLUNK_ENDPOINT = 'https://your-splunk-instance:8088/services/collector'
+SPLUNK_TOKEN = 'your-splunk-token'
+
+def lambda_handler(event, context):
+    # Create an SQS client
+    sqs = boto3.client('sqs')
+
+    # Retrieve the SQS queue URL
+    queue_url = 'your-sqs-queue-url'
+
+    # Receive messages from the SQS queue
+    response = sqs.receive_message(
+        QueueUrl=queue_url,
+        AttributeNames=['All'],
+        MaxNumberOfMessages=10,
+        MessageAttributeNames=['All'],
+        VisibilityTimeout=0,
+        WaitTimeSeconds=0
+    )
+
+    # Process received messages
+    if 'Messages' in response:
+        for message in response['Messages']:
+            # Extract the CloudTrail log event from the message
+            log_event = json.loads(message['Body'])['Records']
+
+            # Send the log event to Splunk
+            send_to_splunk(log_event)
+
+            # Delete the message from the SQS queue
+            sqs.delete_message(
+                QueueUrl=queue_url,
+                ReceiptHandle=message['ReceiptHandle']
+            )
+
+def send_to_splunk(log_event):
+    # Convert the log event to JSON string
+    log_event_json = json.dumps(log_event)
+
+    # Set up the headers and payload for the Splunk request
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Splunk ' + SPLUNK_TOKEN
+    }
+    payload = {
+        'event': log_event_json
+    }
+
+    # Send the log event to Splunk
+    response = requests.post(SPLUNK_ENDPOINT, headers=headers, json=payload)
+
+    # Check the response status
+    if response.status_code != 200:
+        print('Failed to send log event to Splunk. Status code:', response.status_code)
+    else:
+        print('Log event sent to Splunk successfully.')
+
+
+
+==========================================================================================================================
+
+
+import json
+import boto3
+import requests
+
+# Configure Splunk endpoint and authentication
+SPLUNK_ENDPOINT = 'https://your-splunk-instance:8088/services/collector'
+SPLUNK_TOKEN = 'your-splunk-token'
+
+def lambda_handler(event, context):
+    # Create an SQS client
+    sqs = boto3.client('sqs')
+
+    # Retrieve the SQS queue URL
+    queue_url = 'your-sqs-queue-url'
+
+    # Receive messages from the SQS queue
+    response = sqs.receive_message(
+        QueueUrl=queue_url,
+        AttributeNames=['All'],
+        MaxNumberOfMessages=10,
+        MessageAttributeNames=['All'],
+        VisibilityTimeout=0,
+        WaitTimeSeconds=0
+    )
+
+    # Process received messages
+    if 'Messages' in response:
+        for message in response['Messages']:
+            # Extract the VPC flow log event from the message
+            log_event = json.loads(message['Body'])['logEvents']
+
+            # Send the log event to Splunk
+            send_to_splunk(log_event)
+
+            # Delete the message from the SQS queue
+            sqs.delete_message(
+                QueueUrl=queue_url,
+                ReceiptHandle=message['ReceiptHandle']
+            )
+
+def send_to_splunk(log_event):
+    # Convert the log event to JSON string
+    log_event_json = json.dumps(log_event)
+
+    # Set up the headers and payload for the Splunk request
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Splunk ' + SPLUNK_TOKEN
+    }
+    payload = {
+        'event': log_event_json
+    }
+
+    # Send the log event to Splunk
+    response = requests.post(SPLUNK_ENDPOINT, headers=headers, json=payload)
+
+    # Check the response status
+    if response.status_code != 200:
+        print('Failed to send log event to Splunk. Status code:', response.status_code)
+    else:
+        print('Log event sent to Splunk successfully.')
+
