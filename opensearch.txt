@@ -1,0 +1,11 @@
+policies:
+  - name: automate-opensearch-snapshots
+    resource: aws.opendistro-domain
+    filters:
+      - type: value
+        key: "DomainStatus"
+        value: "Active"
+    actions:
+      - type: opensearch-create-snapshot
+        repository: <snapshot_repository_name>
+        snapshot_name_prefix: <snapshot_name_prefix>
