@@ -1,0 +1,60 @@
+from aws_cdk import core
+import aws_cdk.aws_appstream as appstream
+import aws_cdk.aws_iam as iam
+
+class AppStreamStack(core.Stack):
+
+    def __init__(self, scope: core.Construct, id: str, **kwargs) -> None:
+        super().__init__(scope, id, **kwargs)
+
+        # IAM role for AppStream instances
+        appstream_role = iam.Role(
+            self, 'AppStreamRole',
+            assumed_by=iam.ServicePrincipal('appstream.amazonaws.com'),
+            managed_policies=[
+                iam.ManagedPolicy.from_aws_managed_policy_name('AmazonAppStreamServiceAccess')
+            ]
+        )
+
+        # Create the AppStream stack
+        appstream_stack = appstream.CfnStack(
+            self, 'AppStreamStack',
+            name='MyAppStreamStack'
+        )
+
+        # Create the AppStream fleet
+        appstream_fleet = appstream.CfnFleet(
+            self, 'AppStreamFleet',
+            name='MyAppStreamFleet',
+            compute_capacity=appstream.CfnFleet.ComputeCapacityProperty(
+                desired_instances=2  # Change this as needed
+            ),
+            fleet_type='ALWAYS_ON',
+            instance_type='stream.standard.medium',  # Change the instance type as needed
+            image_name='MyAppImage',  # Replace with the image you want to use
+            iam_role_arn=appstream_role.role_arn,
+            stack_name=appstream_stack.name
+        )
+
+        # Create the AppStream image builder
+        appstream_image_builder = appstream.CfnImageBuilder(
+            self, 'AppStreamImageBuilder',
+            name='MyAppStreamImageBuilder',
+            image_name='MyAppImageBuilder',  # Replace with the image builder name
+            instance_type='stream.standard.medium',  # Change the instance type as needed
+            image_arn='MyAppImageARN',  # Replace with the ARN of your base image
+            iam_role_arn=appstream_role.role_arn
+        )
+
+        # Associate the image builder with the stack
+        appstream_stack.set_image_builder_configuration(
+            appstream.ImageBuilderConfiguration(
+                name='MyAppStreamImageBuilderConfig',
+                image_builder=appstream_image_builder
+            )
+        )
+
+
+app = core.App()
+AppStreamStack(app, "AppStreamStack")
+app.synth()
