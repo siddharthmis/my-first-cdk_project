@@ -1,0 +1,97 @@
+import boto3
+import datetime
+
+def lambda_handler(event, context):
+    # Specify the SageMaker Studio domain name
+    studio_domain_name = 'your-studio-domain-name'
+    
+    # Get the current date and time
+    now = datetime.datetime.now()
+    
+    # Check if the current day is Saturday or Sunday
+    if now.weekday() in [5, 6]:  # Saturday or Sunday
+        client = boto3.client('sagemaker')
+        
+        # Describe the SageMaker Studio domain
+        response = client.describe_domain(DomainId=studio_domain_name)
+        
+        # Check if the Studio domain is in an active state
+        if response['DomainStatus']['Status'] == 'InService':
+            # Stop the SageMaker Studio domain
+            client.stop_domain(DomainId=studio_domain_name)
+            
+            return {
+                'statusCode': 200,
+                'body': f'Successfully stopped SageMaker Studio domain: {studio_domain_name}'
+            }
+        else:
+            return {
+                'statusCode': 200,
+                'body': f'SageMaker Studio domain is not in an active state: {studio_domain_name}'
+            }
+    else:
+        return {
+            'statusCode': 200,
+            'body': 'No action taken. It is not a weekend.'
+        }
+
+
+
+
+=========================================================================================
+
+
+from aws_cdk import (
+    aws_lambda as _lambda,
+    aws_apigateway as apigateway,
+    aws_iam as iam,
+    core,
+)
+
+class SSMWorkspaceRegistrationStack(core.Stack):
+
+    def __init__(self, scope: core.Construct, id: str, **kwargs) -> None:
+        super().__init__(scope, id, **kwargs)
+
+        # Create an IAM role for the Lambda function
+        lambda_role = iam.Role(
+            self, 'LambdaRole',
+            assumed_by=iam.ServicePrincipal('lambda.amazonaws.com'),
+            managed_policies=[
+                iam.ManagedPolicy.from_aws_managed_policy_name('service-role/AWSLambdaBasicExecutionRole')
+            ]
+        )
+
+        # Create the Lambda function
+        lambda_function = _lambda.Function(
+            self, 'SSMRegistrationLambda',
+            runtime=_lambda.Runtime.PYTHON_3_8,
+            handler='ssm_registration.handler',
+            role=lambda_role,
+            code=_lambda.Code.from_asset('lambda'),  # Assuming your Lambda code is in a 'lambda' directory
+        )
+
+        # Create the API Gateway
+        api = apigateway.RestApi(
+            self, 'SSMRegistrationAPI',
+            default_cors_preflight_options=apigateway.CorsOptions(allow_origins=['*'])
+        )
+
+        # Create the Lambda integration with the API Gateway
+        integration = apigateway.LambdaIntegration(lambda_function)
+        
+        # Create the API Gateway resource and connect it to the Lambda integration
+        resource = api.root.add_resource('register')
+        resource.add_method('POST', integration)
+
+        # Output the API Gateway endpoint URL
+        output = core.CfnOutput(
+            self, 'SSMRegistrationAPIEndpoint',
+            value=api.url,
+            description='URL of the SSM Registration API'
+        )
+
+app = core.App()
+SSMWorkspaceRegistrationStack(app, 'SSMWorkspaceRegistrationStack')
+app.synth()
+
