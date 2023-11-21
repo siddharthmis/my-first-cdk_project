@@ -59,3 +59,22 @@ Replace "C:\Your\Directory\Path" with the path to your desired directory.
 This script uses the Shell.Application COM object to access the extended properties of files and set custom tags. Adjust the tag name and value as needed by modifying the line inside the loop where the extended property is set.
 
 Run this PowerShell script in an elevated PowerShell window (Run as Administrator) to ensure it has the necessary permissions to modify the extended properties of files. Additionally, bear in mind that modifying file properties directly through scripts can have unexpected effects, so always ensure you have a backup and understand the potential impacts.
+
+# Set the directory path
+$directory = "C:\Your\Directory\Path"
+
+# Get all files recursively in the directory
+$files = Get-ChildItem -Path $directory -Recurse -File
+
+# Loop through each file and add a new property and value
+foreach ($file in $files) {
+    # Set the custom property name and value (replace with your desired property and value)
+    $propertyName = "YourPropertyName"
+    $propertyValue = "YourPropertyValue"
+    
+    # Add the property as an alternate data stream to the file
+    Set-Content -Path $file.FullName -Stream $propertyName -Value $propertyValue
+}
+
+# Output a message indicating the completion
+Write-Host "New property and value added to all files under $directory"
