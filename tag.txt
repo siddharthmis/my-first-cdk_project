@@ -119,3 +119,45 @@ foreach ($file in $files) {
 
 # Output a message indicating the completion
 Write-Host "New tags and values added to all files under $directory"
+
+
+
+
+
+# Define the directory path
+$directory = "C:\Your\Directory\Path"
+
+# Define tags and values to add (replace with your desired tags and values)
+$newTags = @{
+    "Tag1" = "Value1"
+    "Tag2" = "Value2"
+    "Tag3" = "Value3"
+}
+
+# Function to add tags to files
+function Add-TagsToFiles {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$path,
+        
+        [Parameter(Mandatory=$true)]
+        [hashtable]$tags
+    )
+
+    # Get all files recursively in the directory
+    $files = Get-ChildItem -Path $path -Recurse -File
+
+    # Loop through each file and add new tags with values (custom metadata)
+    foreach ($file in $files) {
+        foreach ($tag in $tags.GetEnumerator()) {
+            # Set the new tags with values as the file's extended properties
+            $file | Add-Member -MemberType NoteProperty -Name $tag.Key -Value $tag.Value -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+# Add tags to files in the specified directory
+Add-TagsToFiles -path $directory -tags $newTags
+
+# Output a message indicating the completion
+Write-Host "New tags and values added to all files under $directory"
