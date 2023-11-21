@@ -78,3 +78,44 @@ foreach ($file in $files) {
 
 # Output a message indicating the completion
 Write-Host "New property and value added to all files under $directory"
+
+
+
+
+# Define the directory path
+$directory = "C:\Your\Directory\Path"
+
+# Get all files recursively in the directory
+$files = Get-ChildItem -Path $directory -Recurse -File
+
+# Loop through each file and add new tags with values (custom metadata)
+foreach ($file in $files) {
+    # Retrieve the existing tags if any
+    $existingTags = (Get-ItemProperty -Path $file.FullName -ErrorAction SilentlyContinue).Tags
+
+    # Define new tags with values to add (replace with your desired tags and values)
+    $newTags = @{
+        "Tag1" = "Value1"
+        "Tag2" = "Value2"
+        "Tag3" = "Value3"
+    }
+
+    # Combine the existing tags and new tags with values
+    $allTags = @{}
+
+    if ($existingTags) {
+        foreach ($tag in $existingTags.GetEnumerator()) {
+            $allTags[$tag.Key] = $tag.Value
+        }
+    }
+
+    foreach ($tag in $newTags.GetEnumerator()) {
+        $allTags[$tag.Key] = $tag.Value
+    }
+
+    # Set the new combined tags with values as the file's tags
+    Set-ItemProperty -Path $file.FullName -Name Tags -Value $allTags
+}
+
+# Output a message indicating the completion
+Write-Host "New tags and values added to all files under $directory"
