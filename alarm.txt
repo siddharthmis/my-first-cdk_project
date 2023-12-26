@@ -1,0 +1,54 @@
+import boto3
+import csv
+import datetime
+
+def get_alarm_trigger_counts():
+    cloudwatch = boto3.client('cloudwatch')
+
+    # Define the time range for the past month
+    end_time = datetime.datetime.utcnow()
+    start_time = end_time - datetime.timedelta(days=30)
+
+    # Get all CloudWatch Alarms in the account
+    paginator = cloudwatch.get_paginator('describe_alarms')
+    alarm_descriptions = paginator.paginate()['MetricAlarms']
+
+    alarm_trigger_counts = {}
+
+    # Loop through each alarm and get trigger count for the past month
+    for alarm_description in alarm_descriptions:
+        alarm_name = alarm_description['AlarmName']
+
+        # Get statistics for each alarm metric for the past month
+        response = cloudwatch.get_metric_statistics(
+            Namespace='AWS/CloudWatch',
+            MetricName='NumberOfAlarmsTriggered',
+            Dimensions=[{'Name': 'AlarmName', 'Value': alarm_name}],
+            StartTime=start_time,
+            EndTime=end_time,
+            Period=86400,  # 1 day (86400 seconds)
+            Statistics=['Sum']
+        )
+
+        # Process the response to get the count of triggers
+        if 'Datapoints' in response:
+            datapoints = response['Datapoints']
+            if datapoints:
+                trigger_count = int(datapoints[0]['Sum'])
+                alarm_trigger_counts[alarm_name] = trigger_count
+
+    return alarm_trigger_counts
+
+# Get the count of alarm triggers for all alarms
+alarm_counts = get_alarm_trigger_counts()
+
+# Export data to CSV file
+csv_file = 'alarm_trigger_counts.csv'
+
+with open(csv_file, mode='w', newline='') as file:
+    writer = csv.writer(file)
+    writer.writerow(['AlarmName', 'TriggerCount'])
+    for alarm_name, trigger_count in alarm_counts.items():
+        writer.writerow([alarm_name, trigger_count])
+
+print(f"Alarm trigger counts exported to '{csv_file}' in CSV format.")
