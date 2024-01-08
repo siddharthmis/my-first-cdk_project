@@ -1,0 +1,40 @@
+import boto3
+from datetime import datetime, timedelta
+
+def delete_old_sagemaker_canvas(event, context):
+    # Initialize SageMaker client
+    sagemaker = boto3.client('sagemaker')
+
+    # Calculate the cutoff date (90 days ago)
+    cutoff_date = datetime.now() - timedelta(days=90)
+
+    # List SageMaker Canvas Apps
+    apps = sagemaker.list_apps()['Apps']
+
+    # Loop through Canvas Apps and delete those older than 90 days
+    for app in apps:
+        app_name = app['AppName']
+        creation_time = app['CreationTime']
+
+        # Check if the app is older than 90 days
+        if creation_time < cutoff_date:
+            sagemaker.delete_app(AppName=app_name)
+            print(f"Deleted Canvas App: {app_name}")
+
+    # List SageMaker Canvas Domains
+    domains = sagemaker.list_domains()['Domains']
+
+    # Loop through Canvas Domains and delete those older than 90 days
+    for domain in domains:
+        domain_name = domain['DomainName']
+        creation_time = domain['CreationTime']
+
+        # Check if the domain is older than 90 days
+        if creation_time < cutoff_date:
+            sagemaker.delete_domain(DomainId=domain_name)
+            print(f"Deleted Canvas Domain: {domain_name}")
+
+    return {
+        'statusCode': 200,
+        'body': 'Completed deleting old SageMaker Canvas resources.'
+    }
