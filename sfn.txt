@@ -1,0 +1,57 @@
+from aws_cdk import (
+    aws_stepfunctions as sfn,
+    aws_stepfunctions_tasks as tasks,
+    aws_lambda as _lambda,
+    core
+)
+
+class StepFunctionsStack(core.Stack):
+
+    def __init__(self, scope: core.Construct, id: str, **kwargs) -> None:
+        super().__init__(scope, id, **kwargs)
+
+        # Define Step Functions state machine
+        definition = sfn.Chain.start(
+            sfn.Wait(self, "WaitFor300Seconds", time=sfn.WaitTime.duration(core.Duration.seconds(300))),
+            tasks.LambdaInvoke(
+                "HelloWorldLambda",
+                lambda_function=self.create_lambda_function(),
+                payload_response_only=True,  # Set to True if Lambda returns a JSON result
+                result_path="$.lambdaOutput",  # Customize the output path
+                retry_on_error=sfn.RetryOptions(
+                    max_attempts=3,  # Adjust the number of retry attempts
+                    interval=core.Duration.seconds(10)  # Adjust the retry interval
+                ),
+                input_path="$.inputParameters"  # Customize the input path
+            )
+        ).next(
+            tasks.SnsPublish(
+                "PublishResult",
+                topic=your_sns_topic_here,
+                message=sfn.TaskInput.from_text("Hello from Step Functions!")
+            )
+        )
+
+        state_machine = sfn.StateMachine(
+            self, "MyStateMachine",
+            definition=definition,
+            timeout=core.Duration.minutes(5)  # Adjust the timeout as needed
+        )
+
+    def create_lambda_function(self):
+        # Define and return your Lambda function here
+        # Example Lambda function creation
+        return _lambda.Function(
+            self, "MyLambdaFunction",
+            runtime=_lambda.Runtime.PYTHON_3_8,
+            handler="index.handler",
+            code=_lambda.Code.from_inline("def handler(event, context): return {'statusCode': 200, 'body': 'Hello from Lambda!'}"),
+        )
+
+def main():
+    app = core.App()
+    StepFunctionsStack(app, "StepFunctionsStack")
+    app.synth()
+
+if __name__ == '__main__':
+    main()
