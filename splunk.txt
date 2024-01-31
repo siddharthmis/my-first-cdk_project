@@ -1,0 +1,42 @@
+# Specify the name of the Splunk Forwarder service
+$splunkServiceName = "SplunkForwarder"
+
+# Function to check if the service is running
+function IsServiceRunning($serviceName) {
+    $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+    return ($service -ne $null) -and ($service.Status -eq 'Running')
+}
+
+# Function to check if the service is responding based on logs
+function IsServiceResponding($serviceName) {
+    # Get the last few log entries for the service
+    $logEntries = Get-EventLog -LogName Application -Source "Service Control Manager" `
+        -EntryType Information -Newest 10 | Where-Object { $_.Message -like "*$serviceName*" }
+
+    # Check if there are entries indicating normal service functionality
+    return $logEntries.Count -gt 0
+}
+
+# Function to restart the service
+function RestartService($serviceName) {
+    Restart-Service -Name $serviceName
+}
+
+# Check if the Splunk Forwarder service is running
+if (IsServiceRunning $splunkServiceName) {
+    Write-Output "Splunk Forwarder service is running."
+
+    # Check if the service is responding based on logs
+    if (-not IsServiceResponding $splunkServiceName) {
+        Write-Output "Splunk Forwarder service is not responding as expected. Restarting..."
+
+        # Restart the Splunk Forwarder service
+        RestartService $splunkServiceName
+
+        Write-Output "Splunk Forwarder service restarted."
+    } else {
+        Write-Output "Splunk Forwarder service is responding as expected based on logs."
+    }
+} else {
+    Write-Output "Splunk Forwarder service is not running."
+}
