@@ -1,0 +1,132 @@
+from aws_cdk import (
+    aws_iam as iam,
+    aws_kinesisfirehose as firehose,
+    aws_logs as logs,
+    aws_lambda as _lambda,
+    aws_s3 as s3,
+    core
+)
+
+class LogDestinationStack(core.Stack):
+    def __init__(self, scope: core.Construct, id: str, props: core.StackProps = None) -> None:
+        super().__init__(scope, id, props=props)
+        self.destination_account_id = props.env.account
+        source_acct_num_param = core.CfnParameter(self, "SourceAccountNumber", description="Account Number which is given access to push the logs.")
+        if source_acct_num_param.value_as_string:
+            print("SourceAccountNumber: ----------- " + source_acct_num_param.value_as_string)
+        self.source_log_account_id = source_acct_num_param.value_as_string or props.env.account
+        self.create_log_bucket()
+        self.create_log_consumer_resources()
+
+    def create_log_bucket(self):
+        self.logs_bucket = s3.Bucket(self, "centrallogsbucket", bucket_name="central-logs-" + self.account)
+
+    def create_log_consumer_resources(self):
+        # LambdaRole
+        firehose_lambda_role = iam.Role(self, "FirehoseLambdaRole", assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"), path="/")
+        firehose_lambda_role.add_to_policy(iam.PolicyStatement(
+            effect=iam.Effect.ALLOW,
+            resources=["arn:aws:logs:*:*:*"],
+            actions=["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        ))
+
+        # FirehoseDataProcessingFunction
+        handler = _lambda.Function(self, "FirehoseDataProcessorFunction",
+                                   function_name="data-processor-function",
+                                   runtime=_lambda.Runtime.NODEJS_12_X,
+                                   code=_lambda.Code.from_asset("resources"),
+                                   handler="index.handler",
+                                   role=firehose_lambda_role,
+                                   timeout=core.Duration.minutes(2))
+
+        # FirehoseDeliveryRole & Policies
+        firehose_delivery_role = iam.Role(self, "FirehoseDeliveryRole", assumed_by=iam.ServicePrincipal("firehose.amazonaws.com"), path="/")
+
+        # S3 permissions
+        firehose_delivery_role.add_to_policy(iam.PolicyStatement(
+            effect=iam.Effect.ALLOW,
+            resources=[self.logs_bucket.bucket_arn, self.logs_bucket.bucket_arn + "/*"],
+            actions=["s3:AbortMultipartUpload", "s3:GetBucketLocation", "s3:GetObject", "s3:ListBucket", "s3:ListBucketMultipartUploads", "s3:PutObject"]
+        ))
+
+        # Lambda permissions
+        firehose_delivery_role.add_to_policy(iam.PolicyStatement(
+            effect=iam.Effect.ALLOW,
+            resources=[handler.function_arn],
+            actions=["lambda:GetFunctionConfiguration", "lambda:InvokeFunction"]
+        ))
+
+        # Log group for Firehose logs.
+        firehose_log_group = logs.LogGroup(self, "firehoseloggroup", log_group_name="central-logs-delivery-group")
+        log_stream = logs.LogStream(self, "logstream", log_stream_name="central-logs-delivery-stream", log_group=firehose_log_group)
+
+        firehose_delivery_role.add_to_policy(iam.PolicyStatement(
+            effect=iam.Effect.ALLOW,
+            resources=[firehose_log_group.log_group_arn],
+            actions=["logs:PutLogEvents"]
+        ))
+
+        # FirehoseLoggingDeliveryStream - Start
+        s3_config = firehose.CfnDeliveryStream.ExtendedS3DestinationConfigurationProperty(
+            bucket_arn=self.logs_bucket.bucket_arn,
+            buffering_hints=firehose.CfnDeliveryStream.BufferingHintsProperty(size_in_m_bs=50, interval_in_seconds=300),
+            compression_format="UNCOMPRESSED",
+            role_arn=firehose_delivery_role.role_arn,
+            prefix="CentralLogs/AWSLogs/",
+            error_output_prefix="CentralLogs/AWSLogs/Error/"
+        )
+        parameters = firehose.CfnDeliveryStream.ProcessorParameterProperty(parameter_name="LambdaArn", parameter_value=handler.function_arn)
+        processor_property = firehose.CfnDeliveryStream.ProcessorProperty(parameters=[parameters], type="Lambda")
+        s3_config.processing_configuration = firehose.CfnDeliveryStream.ProcessingConfigurationProperty(enabled=True, processors=[processor_property])
+        s3_config.cloud_watch_logging_options = firehose.CfnDeliveryStream.CloudWatchLoggingOptionsProperty(enabled=True, log_group_name=firehose_log_group.log_group_name, log_stream_name=log_stream.log_stream_name)
+
+        firehose_delivery_stream = firehose.CfnDeliveryStream(self, "FirehoseLoggingDeliveryStream",
+                                                              delivery_stream_type="DirectPut",
+                                                              extended_s3_destination_configuration=s3_config)
+
+        # FirehoseLoggingDeliveryStream - End
+
+        # Policy Statements for LogDestination- start
+        policy_stmt = iam.PolicyStatement(
+            actions=["firehose:PutRecord"],
+            resources=["*"],
+            effect=iam.Effect.ALLOW
+        )
+        policy_doc = iam.PolicyDocument()
+        policy_doc.add_statements(policy_stmt)
+        policy_prop = iam.CfnRole.PolicyProperty(policy_name="logDestinationPolicy", policy_document=policy_doc)
+
+        # AssumeRolePolicyDocument for LogDestination - start
+        principal = iam.ServicePrincipal("logs.amazonaws.com")
+        assume_policy_statement = iam.PolicyStatement(
+            actions=["sts:AssumeRole"],
+            effect=iam.Effect.ALLOW,
+            principals=[principal]
+        )
+        assume_policy_doc = iam.PolicyDocument()
+        assume_policy_doc.add_statements(assume_policy_statement)
+
+        # AssumeRolePolicyDocument - end
+        role_props = iam.CfnRoleProps(
+            path="/",
+            assume_role_policy_document=assume_policy_doc,
+            policies=[policy_prop]
+        )
+        cfn_role = iam.CfnRole(self, "CfnRole", **role_props)
+
+        log_destination = logs.CfnDestination(self, "LogDestination",
+                                              destination_name="Central-Log-Destination",
+                                              role_arn=cfn_role.attr_arn,
+                                              target_arn=firehose_delivery_stream.attr_arn,
+                                              destination_policy='{"Version" : "2012-10-17","Statement" : [{"Effect" : "Allow", "Principal" : {"AWS" :  ["' + self.source_log_account_id + '"]},"Action" : "logs:PutSubscriptionFilter", "Resource" : "arn:aws:logs:' + self.region + ':' + self.destination_account_id + ':destination:Central-Log-Destination"}]}')
+
+        log_destination.add_depends_on(firehose_delivery_stream)
+        log_destination.add_depends_on(cfn_role)
+        print(log_destination.destination_policy)
+        self.log_destination_arn = log_destination.attr_arn
+
+        output = core.CfnOutput(self, "LogDestinationARN",
+                                description="LogDestination ARN",
+                                value=log_destination.attr_arn)
+
+

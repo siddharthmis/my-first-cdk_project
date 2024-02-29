@@ -1,0 +1,177 @@
+import zlib
+import boto3
+
+def transformLogEvent(logEvent):
+    return f"{logEvent['message']}\n"
+
+def putRecordsToFirehoseStream(streamName, records, client, resolve, reject, attemptsMade, maxAttempts):
+    client.put_record_batch(
+        DeliveryStreamName=streamName,
+        Records=records
+    )
+    codes = []
+    failed = []
+    errMsg = None
+    try:
+        data = client.put_record_batch(
+            DeliveryStreamName=streamName,
+            Records=records
+        )
+        if 'FailedPutCount' in data and data['FailedPutCount'] > 0:
+            failed = records
+        else:
+            for i in range(len(data['RequestResponses'])):
+                code = data['RequestResponses'][i]['ErrorCode']
+                if code:
+                    codes.append(code)
+                    failed.append(records[i])
+            errMsg = f"Individual error codes: {codes}"
+    except Exception as e:
+        failed = records
+        errMsg = str(e)
+    if failed:
+        if attemptsMade + 1 < maxAttempts:
+            print(f"Some records failed while calling PutRecordBatch, retrying. {errMsg}")
+            putRecordsToFirehoseStream(streamName, failed, client, resolve, reject, attemptsMade + 1, maxAttempts)
+        else:
+            reject(f"Could not put records after {maxAttempts} attempts. {errMsg}")
+    else:
+        resolve('')
+
+def putRecordsToKinesisStream(streamName, records, client, resolve, reject, attemptsMade, maxAttempts):
+    client.put_records(
+        StreamName=streamName,
+        Records=records
+    )
+    codes = []
+    failed = []
+    errMsg = None
+    try:
+        data = client.put_records(
+            StreamName=streamName,
+            Records=records
+        )
+        if 'FailedRecordCount' in data and data['FailedRecordCount'] > 0:
+            failed = records
+        else:
+            for i in range(len(data['Records'])):
+                code = data['Records'][i]['ErrorCode']
+                if code:
+                    codes.append(code)
+                    failed.append(records[i])
+            errMsg = f"Individual error codes: {codes}"
+    except Exception as e:
+        failed = records
+        errMsg = str(e)
+    if failed:
+        if attemptsMade + 1 < maxAttempts:
+            print(f"Some records failed while calling PutRecords, retrying. {errMsg}")
+            putRecordsToKinesisStream(streamName, failed, client, resolve, reject, attemptsMade + 1, maxAttempts)
+        else:
+            reject(f"Could not put records after {maxAttempts} attempts. {errMsg}")
+    else:
+        resolve('')
+
+def createReingestionRecord(isSas, originalRecord):
+    if isSas:
+        return {
+            'Data': bytes(originalRecord['data'], 'base64'),
+            'PartitionKey': originalRecord['kinesisRecordMetadata']['partitionKey']
+        }
+    else:
+        return {
+            'Data': bytes(originalRecord['data'], 'base64')
+        }
+
+def getReingestionRecord(isSas, reIngestionRecord):
+    if isSas:
+        return {
+            'Data': reIngestionRecord['Data'],
+            'PartitionKey': reIngestionRecord['PartitionKey']
+        }
+    else:
+        return {
+            'Data': reIngestionRecord['Data']
+        }
+
+def handler(event, context, callback):
+    records = event['records']
+    promises = []
+    for r in records:
+        buffer = bytes(r['data'], 'base64')
+        try:
+            decompressed = zlib.decompress(buffer)
+        except Exception as e:
+            promises.append({
+                'recordId': r['recordId'],
+                'result': 'ProcessingFailed'
+            })
+            continue
+        data = json.loads(decompressed)
+        if data['messageType'] == 'CONTROL_MESSAGE':
+            promises.append({
+                'recordId': r['recordId'],
+                'result': 'Dropped'
+            })
+        elif data['messageType'] == 'DATA_MESSAGE':
+            transformed = []
+            for logEvent in data['logEvents']:
+                transformed.append(transformLogEvent(logEvent))
+            payload = ''.join(transformed)
+            encoded = bytes(payload, 'utf-8').decode('base64')
+            promises.append({
+                'recordId': r['recordId'],
+                'result': 'Ok',
+                'data': encoded
+            })
+        else:
+            promises.append({
+                'recordId': r['recordId'],
+                'result': 'ProcessingFailed'
+            })
+    recs = Promise.all(promises)
+    isSas = 'sourceKinesisStreamArn' in event
+    streamARN = event['sourceKinesisStreamArn'] if isSas else event['deliveryStreamArn']
+    region = streamARN.split(':')[3]
+    streamName = streamARN.split('/')[1]
+    result = {'records': recs}
+    recordsToReingest = []
+    putRecordBatches = []
+    totalRecordsToBeReingested = 0
+    inputDataByRecId = {}
+    for r in records:
+        inputDataByRecId[r['recordId']] = createReingestionRecord(isSas, r)
+    projectedSize = sum([len(r['recordId']) + len(r['data']) for r in recs if r['result'] == 'Ok'])
+    for idx in range(len(records)):
+        rec = result['records'][idx]
+        if rec['result'] == 'Ok':
+            totalRecordsToBeReingested += 1
+            recordsToReingest.append(getReingestionRecord(isSas, inputDataByRecId[rec['recordId']]))
+            projectedSize -= len(rec['data'])
+            del rec['data']
+            result['records'][idx]['result'] = 'Dropped'
+            if len(recordsToReingest) == 500:
+                putRecordBatches.append(recordsToReingest)
+                recordsToReingest = []
+    if recordsToReingest:
+        putRecordBatches.append(recordsToReingest)
+    if putRecordBatches:
+        recordsReingestedSoFar = 0
+        for idx in range(len(putRecordBatches)):
+            recordBatch = putRecordBatches[idx]
+            if isSas:
+                client = boto3.client('kinesis', region_name=region)
+                putRecordsToKinesisStream(streamName, recordBatch, client, resolve, reject, 0, 20)
+            else:
+                client = boto3.client('firehose', region_name=region)
+                putRecordsToFirehoseStream(streamName, recordBatch, client, resolve, reject, 0, 20)
+            recordsReingestedSoFar += len(recordBatch)
+            print(f"Reingested {recordsReingestedSoFar}/{totalRecordsToBeReingested} records out of {len(records)} in to {streamName} stream")
+        print(f"Reingested all {totalRecordsToBeReingested} records out of {len(records)} in to {streamName} stream")
+        callback(None, result)
+    else:
+        print("No records needed to be reingested.")
+        callback(None, result)
+
+
+

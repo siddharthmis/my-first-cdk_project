@@ -1,0 +1,51 @@
+import boto3
+import datetime
+
+def cancel_datasync_job(datasync_job_arn):
+    datasync = boto3.client('datasync')
+    datasync.cancel_task_execution(TaskExecutionArn=datasync_job_arn)
+
+def lambda_handler(event, context):
+    # Get current time
+    current_time = datetime.datetime.now().time()
+    
+    # Check if current time is within business hours (assuming business hours are from 9 AM to 5 PM)
+    if current_time >= datetime.time(9, 0) and current_time <= datetime.time(17, 0):
+        # Get ONTAP FSx metrics
+        fsx = boto3.client('fsx')
+        response = fsx.describe_storage_virtual_machines(
+            FileSystemId='your_filesystem_id'
+        )
+        used_capacity = response['StorageVirtualMachines'][0]['StorageCapacity']['Used']
+        total_capacity = response['StorageVirtualMachines'][0]['StorageCapacity']['Total']
+        
+        # Calculate used percentage
+        used_percentage = (used_capacity / total_capacity) * 100
+        
+        # Check if used percentage is above 90%
+        if used_percentage > 90:
+            # Get DataSync tasks associated with the ONTAP FSx filesystem
+            datasync = boto3.client('datasync')
+            tasks_response = datasync.list_tasks(
+                Filters=[
+                    {
+                        'Name': 'LocationUri',
+                        'Operator': 'Contains',
+                        'Values': ['fsx']
+                    }
+                ]
+            )
+            
+            # Cancel DataSync tasks
+            for task in tasks_response['Tasks']:
+                cancel_datasync_job(task['TaskArn'])
+            
+            return {
+                'statusCode': 200,
+                'body': 'DataSync jobs cancelled due to high SSD usage during business hours.'
+            }
+    
+    return {
+        'statusCode': 200,
+        'body': 'No action taken. SSD usage is within acceptable limits or outside business hours.'
+    }
