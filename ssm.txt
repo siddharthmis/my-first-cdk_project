@@ -1,0 +1,63 @@
+import boto3
+import json
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from datetime import datetime, timedelta
+
+def lambda_handler(event, context):
+    ssm = boto3.client('ssm')
+    ec2 = boto3.resource('ec2')
+
+    # Get the patch baseline
+    response = ssm.describe_patch_baselines()
+    baseline_id = response['BaselineIdentities'][0]['BaselineId']
+
+    # Get the patch groups
+    response = ssm.describe_patch_groups()
+    patch_groups = response['Mappings']
+
+    # Get the instances targeted by each patch group
+    instances = []
+    for group in patch_groups:
+        filters = [{'Name': 'tag:Patch Group', 'Values': [group]}]
+        instances += [i.id for i in ec2.instances.filter(Filters=filters)]
+
+    # Get the maintenance windows for the next 72 hours
+    now = datetime.now()
+    future = now + timedelta(hours=72)
+    response = ssm.describe_maintenance_window_schedule(
+        Filters=[{'Key': 'NextExecutionTime', 'Values': [now.isoformat(), future.isoformat()]}]
+    )
+    windows = response['ScheduledWindowExecutions']
+
+    # Prepare the email body
+    body = '<table><tr><th>Instance ID</th><th>Instance Name</th><th>Maintenance Window</th></tr>'
+    for instance in instances:
+        for window in windows:
+            if instance in window['Targets']:
+                body += '<tr><td>{}</td><td>{}</td><td>{}</td></tr>'.format(
+                    instance,
+                    ec2.Instance(instance).tags.get('Name', ''),
+                    window['WindowId']
+                )
+    body += '</table>'
+
+    # Send an email
+    msg = MIMEMultipart()
+    msg['From'] = 'your-email@example.com'
+    msg['To'] = 'recipient@example.com'
+    msg['Subject'] = 'Upcoming Patch Schedule'
+    msg.attach(MIMEText(body, 'html'))
+
+    server = smtplib.SMTP('smtp.example.com', 587)
+    server.starttls()
+    server.login(msg['From'], 'your-password')
+    text = msg.as_string()
+    server.sendmail(msg['From'], msg['To'], text)
+    server.quit()
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps('Email sent!')
+    }
