@@ -1,0 +1,59 @@
+import boto3
+from datetime import datetime, timedelta
+
+# Initialize boto3 clients
+ssm = boto3.client('ssm')
+sns = boto3.client('sns')
+
+def lambda_handler(event, context):
+    # Get the current date and time
+    now = datetime.utcnow()
+    # Prepare the timeframe for checking maintenance (e.g., next 7 days)
+    end_time = (now + timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    # List upcoming maintenance windows
+    windows = ssm.describe_maintenance_windows(
+        Filters=[
+            {'Key': 'Enabled', 'Values': ['True']},
+            {'Key': 'Cutoff', 'Values': ['0']}
+        ],
+        WindowType='AUTOMATIC'
+    )
+
+    maintenance_info = []
+    for window in windows.get('WindowIdentities', []):
+        window_id = window['WindowId']
+        # Get targets for the maintenance window
+        targets = ssm.describe_maintenance_window_targets(
+            WindowId=window_id,
+            ResourceType='INSTANCE'
+        )
+
+        instance_ids = [target['Targets'][0]['Key'] for target in targets.get('Targets', []) if target['Targets']]
+        if instance_ids:
+            # Fetch instance details if needed
+            ec2 = boto3.client('ec2')
+            instances = ec2.describe_instances(InstanceIds=instance_ids)
+            for reservation in instances['Reservations']:
+                for instance in reservation['Instances']:
+                    instance_info = {
+                        'InstanceId': instance['InstanceId'],
+                        'InstanceType': instance['InstanceType'],
+                        'LaunchTime': instance['LaunchTime'].strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                    maintenance_info.append(f"Window ID: {window_id}, Instance Details: {instance_info}")
+
+    # Prepare notification message
+    if maintenance_info:
+        message = f"Upcoming SSM Maintenance Notifications:\n\n" + "\n".join(maintenance_info)
+    else:
+        message = "No SSM maintenance scheduled in the next 7 days."
+
+    # Send the message via SNS
+    sns_response = sns.publish(
+        TopicArn='arn:aws:sns:REGION:ACCOUNT_ID:YourSNSTopic',
+        Message=message,
+        Subject='SSM Maintenance Alert'
+    )
+
+    return sns_response
