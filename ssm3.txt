@@ -1,0 +1,414 @@
+Write a Lambda function in Python to send preemptive notifications of upcoming maintenance windows with targeted ec2 instances details
+ChatGPT
+To write a Python Lambda function that sends preemptive notifications about upcoming maintenance windows with details on targeted EC2 instances, you'll typically use AWS services like AWS Lambda, Amazon SNS (Simple Notification Service) for notifications, and AWS SDK for Python (Boto3) to interact with AWS services.
+
+Here's a step-by-step breakdown of how to create this function:
+
+Set Up Your AWS Environment: You will need an AWS account. Configure IAM roles for Lambda with permissions to access EC2 and SNS.
+
+Create an SNS Topic: This topic will be used to send notifications. You can set up email subscriptions or integrate other notification channels.
+
+Write the Lambda Function:
+
+Use Boto3 to query EC2 for instances that have scheduled maintenance.
+Format the details and send a notification via SNS.
+Deploy the Lambda Function: Upload your function to AWS Lambda and set a trigger. The trigger could be based on a time schedule (e.g., check daily).
+
+Here’s a basic example of what the Lambda function might look like in Python:
+
+python
+Copy code
+import boto3
+from datetime import datetime, timedelta
+
+# Initialize boto3 clients
+ec2 = boto3.client('ec2')
+sns = boto3.client('sns')
+
+def lambda_handler(event, context):
+    # Get the current date and time
+    now = datetime.utcnow()
+    # Prepare the timeframe for checking maintenance (e.g., next 7 days)
+    start_time = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+    end_time = (now + timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    # Describe maintenance windows for EC2 instances
+    response = ec2.describe_instance_status(
+        Filters=[
+            {'Name': 'event.code', 'Values': ['instance-reboot', 'system-reboot', 'system-maintenance']}
+        ],
+        StartTime=start_time,
+        EndTime=end_time
+    )
+
+    # Collect information about instances under maintenance
+    instances_info = []
+    for status in response['InstanceStatuses']:
+        instance_id = status['InstanceId']
+        for event in status['Events']:
+            event_description = event['Description']
+            event_time = event['NotBefore']
+            instances_info.append(f"Instance ID: {instance_id}, Event: {event_description}, Scheduled Start: {event_time}")
+
+    # Prepare notification message
+    if instances_info:
+        message = f"Upcoming EC2 Maintenance Notifications:\n\n" + "\n".join(instances_info)
+    else:
+        message = "No maintenance scheduled in the next 7 days."
+
+    # Send the message via SNS
+    sns_response = sns.publish(
+        TopicArn='arn:aws:sns:REGION:ACCOUNT_ID:YourSNSTopic',
+        Message=message,
+        Subject='EC2 Maintenance Alert'
+    )
+
+    return sns_response
+Steps to deploy and use:
+Replace 'arn:aws:sns:REGION:ACCOUNT_ID:YourSNSTopic' with your actual SNS topic ARN.
+Ensure your Lambda function has the necessary IAM permissions to query EC2 status and publish to an SNS topic.
+Consider securing your SNS topic to prevent unauthorized access.
+You might want to adjust the time frame for checking maintenance or refine the notification formatting based on your needs.
+This script is basic and serves as a starting point. Depending on your exact needs, you might need to handle exceptions, filter instances further, or modify the notification process.
+
+
+2 / 2
+
+User
+Can you update the above code to fetch the upcoming maintenance windows from SSM and also include targeted ec2 instances?
+ChatGPT
+To modify the existing Lambda function to fetch upcoming maintenance windows from AWS Systems Manager (SSM) Maintenance Windows and also include the details of targeted EC2 instances, you'll need to utilize additional Boto3 calls to interact with the Systems Manager service. Here's an updated version of the function that performs these tasks:
+
+Query SSM for upcoming maintenance windows.
+Get the targets for each maintenance window (i.e., the EC2 instances).
+Send details via SNS.
+Here's the revised Python Lambda function:
+
+python
+Copy code
+import boto3
+from datetime import datetime, timedelta
+
+# Initialize boto3 clients
+ssm = boto3.client('ssm')
+sns = boto3.client('sns')
+
+def lambda_handler(event, context):
+    # Get the current date and time
+    now = datetime.utcnow()
+    # Prepare the timeframe for checking maintenance (e.g., next 7 days)
+    end_time = (now + timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    # List upcoming maintenance windows
+    windows = ssm.describe_maintenance_windows(
+        Filters=[
+            {'Key': 'Enabled', 'Values': ['True']},
+            {'Key': 'Cutoff', 'Values': ['0']}
+        ],
+        WindowType='AUTOMATIC'
+    )
+
+    maintenance_info = []
+    for window in windows.get('WindowIdentities', []):
+        window_id = window['WindowId']
+        # Get targets for the maintenance window
+        targets = ssm.describe_maintenance_window_targets(
+            WindowId=window_id,
+            ResourceType='INSTANCE'
+        )
+
+        instance_ids = [target['Targets'][0]['Key'] for target in targets.get('Targets', []) if target['Targets']]
+        if instance_ids:
+            # Fetch instance details if needed
+            ec2 = boto3.client('ec2')
+            instances = ec2.describe_instances(InstanceIds=instance_ids)
+            for reservation in instances['Reservations']:
+                for instance in reservation['Instances']:
+                    instance_info = {
+                        'InstanceId': instance['InstanceId'],
+                        'InstanceType': instance['InstanceType'],
+                        'LaunchTime': instance['LaunchTime'].strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                    maintenance_info.append(f"Window ID: {window_id}, Instance Details: {instance_info}")
+
+    # Prepare notification message
+    if maintenance_info:
+        message = f"Upcoming SSM Maintenance Notifications:\n\n" + "\n".join(maintenance_info)
+    else:
+        message = "No SSM maintenance scheduled in the next 7 days."
+
+    # Send the message via SNS
+    sns_response = sns.publish(
+        TopicArn='arn:aws:sns:REGION:ACCOUNT_ID:YourSNSTopic',
+        Message=message,
+        Subject='SSM Maintenance Alert'
+    )
+
+    return sns_response
+Additional Details:
+describe_maintenance_windows: This fetches all maintenance windows. You may want to filter these further based on other criteria like the window start time, which isn't directly available from this call but might be derived or stored elsewhere.
+describe_maintenance_window_targets: This gives the targets of the maintenance window, filtered for instances.
+Target structure: The way targets are extracted (target['Targets'][0]['Key']) assumes a certain structure and that each target has at least one entry. You should validate and adjust this according to your actual target specifications in SSM.
+Instance details: We fetch some basic details about each instance; you might want to extend this with more specific data as required.
+Before running this function, ensure that the AWS Lambda role has the appropriate permissions to access SSM, EC2, and SNS. Adjust the topic ARN to the one you are actually using. This script assumes you have set up everything correctly regarding AWS permissions and configurations.
+
+User
+In the above code, it does not check for maintenance windows in next 7 days, please rewrite the code
+ChatGPT
+You're right! The initial version of the code did not check for maintenance windows occurring specifically within the next 7 days. To correct this, we'll need to modify the function to filter maintenance windows based on their scheduled start times. Unfortunately, the Systems Manager (SSM) API does not provide direct filtering for date ranges, so we'll need to fetch all enabled maintenance windows and then filter them manually in our Lambda function based on their start times.
+
+Here's how you can rewrite the Lambda function to correctly handle this:
+
+python
+Copy code
+import boto3
+from datetime import datetime, timedelta
+
+# Initialize boto3 clients
+ssm = boto3.client('ssm')
+sns = boto3.client('sns')
+
+def lambda_handler(event, context):
+    # Get the current date and time
+    now = datetime.utcnow()
+    end_time = now + timedelta(days=7)
+
+    # List all enabled maintenance windows
+    windows = ssm.describe_maintenance_windows(
+        Filters=[
+            {'Key': 'Enabled', 'Values': ['True']},
+            {'Key': 'Cutoff', 'Values': ['0']}
+        ],
+        WindowType='AUTOMATIC'
+    )
+
+    maintenance_info = []
+    for window in windows.get('WindowIdentities', []):
+        window_id = window['WindowId']
+        # Fetch the schedule for the window
+        schedule = ssm.get_maintenance_window(WindowId=window_id)
+
+        # Convert schedule start time to datetime object and check if it falls within the next 7 days
+        schedule_time = datetime.strptime(schedule['Window']['NextExecutionTime'], '%Y-%m-%dT%H:%M:%SZ')
+        if now <= schedule_time <= end_time:
+            # Get targets for the maintenance window
+            targets = ssm.describe_maintenance_window_targets(
+                WindowId=window_id,
+                ResourceType='INSTANCE'
+            )
+
+            for target in targets.get('Targets', []):
+                for key in target['Targets']:
+                    if key['Key'] == 'InstanceIds':
+                        instance_ids = key['Values']
+                        # Fetch instance details if needed
+                        ec2 = boto3.client('ec2')
+                        instances = ec2.describe_instances(InstanceIds=instance_ids)
+                        for reservation in instances['Reservations']:
+                            for instance in reservation['Instances']:
+                                instance_info = {
+                                    'InstanceId': instance['InstanceId'],
+                                    'InstanceType': instance['InstanceType'],
+                                    'LaunchTime': instance['LaunchTime'].strftime('%Y-%m-%d %H:%M:%S')
+                                }
+                                maintenance_info.append(f"Window ID: {window_id}, Scheduled Time: {schedule_time}, Instance Details: {instance_info}")
+
+    # Prepare notification message
+    if maintenance_info:
+        message = "Upcoming SSM Maintenance Notifications:\n\n" + "\n".join(maintenance_info)
+    else:
+        message = "No SSM maintenance scheduled in the next 7 days."
+
+    # Send the message via SNS
+    sns_response = sns.publish(
+        TopicArn='arn:aws:sns:REGION:ACCOUNT_ID:YourSNSTopic',
+        Message=message,
+        Subject='SSM Maintenance Alert'
+    )
+
+    return sns_response
+Key Changes:
+Datetime Comparison: Added conversion and comparison for the maintenance window's NextExecutionTime to ensure it falls within the next 7 days.
+Manual Date Filtering: Due to API limitations, we manually filter maintenance windows after retrieving their next scheduled times.
+Error Handling: This code assumes all API calls succeed. In practice, you should include error handling to manage API failures or unexpected data structures.
+This script will provide notifications about upcoming maintenance for instances managed by AWS Systems Manager Maintenance Windows that are scheduled within the next week. Remember to replace the SNS topic ARN and ensure your IAM permissions are correctly set up.
+
+User
+Can you rewrite the above code to send the email with HTML format and including details of maintenance window?
+ChatGPT
+Certainly! To modify the Lambda function so that it sends an email in HTML format via Amazon SNS, and includes detailed information about each maintenance window, you will need to:
+
+Structure your message in HTML format: This involves formatting the content with HTML tags to make it more readable.
+Include the details of each maintenance window: Add the relevant details such as start times, instance details, etc., in a structured HTML format.
+Configure SNS to send emails in HTML format: This typically involves setting the MessageStructure to json and specifying that the content type of the email should be HTML.
+Below is an example of how you could implement these changes:
+
+python
+Copy code
+import boto3
+from datetime import datetime, timedelta
+import json
+
+# Initialize boto3 clients
+ssm = boto3.client('ssm')
+sns = boto3.client('sns')
+
+def lambda_handler(event, context):
+    # Get the current date and time
+    now = datetime.utcnow()
+    end_time = now + timedelta(days=7)
+
+    # List all enabled maintenance windows
+    windows = ssm.describe_maintenance_windows(
+        Filters=[
+            {'Key': 'Enabled', 'Values': ['True']},
+            {'Key': 'Cutoff', 'Values': ['0']}
+        ],
+        WindowType='AUTOMATIC'
+    )
+
+    maintenance_info = []
+    for window in windows.get('WindowIdentities', []):
+        window_id = window['WindowId']
+        # Fetch the schedule for the window
+        schedule = ssm.get_maintenance_window(WindowId=window_id)
+
+        # Convert schedule start time to datetime object and check if it falls within the next 7 days
+        schedule_time = datetime.strptime(schedule['Window']['NextExecutionTime'], '%Y-%m-%dT%H:%M:%SZ')
+        if now <= schedule_time <= end_time:
+            # Get targets for the maintenance window
+            targets = ssm.describe_maintenance_window_targets(
+                WindowId=window_id,
+                ResourceType='INSTANCE'
+            )
+
+            target_info_html = "<ul>"
+            for target in targets.get('Targets', []):
+                for key in target['Targets']:
+                    if key['Key'] == 'InstanceIds':
+                        instance_ids = key['Values']
+                        # Fetch instance details if needed
+                        ec2 = boto3.client('ec2')
+                        instances = ec2.describe_instances(InstanceIds=instance_ids)
+                        for reservation in instances['Reservations']:
+                            for instance in reservation['Instances']:
+                                instance_info = f"<li>Instance ID: {instance['InstanceId']}, Type: {instance['InstanceType']}, Launch Time: {instance['LaunchTime'].strftime('%Y-%m-%d %H:%M:%S')}</li>"
+                                target_info_html += instance_info
+            target_info_html += "</ul>"
+
+            maintenance_info.append(f"<h3>Maintenance Window ID: {window_id}</h3><p>Scheduled Time: {schedule_time}</p>{target_info_html}")
+
+    # Prepare notification message
+    if maintenance_info:
+        message = "<html><body><h1>Upcoming SSM Maintenance Notifications:</h1>" + "".join(maintenance_info) + "</body></html>"
+    else:
+        message = "<html><body><h1>No SSM maintenance scheduled in the next 7 days.</h1></body></html>"
+
+    # Send the message via SNS as HTML email
+    sns_response = sns.publish(
+        TopicArn='arn:aws:sns:REGION:ACCOUNT_ID:YourSNSTopic',
+        Message=json.dumps({'default': message, 'email': message}),
+        Subject='SSM Maintenance Alert',
+        MessageStructure='json'
+    )
+
+    return sns_response
+Key Updates:
+HTML Content: The message includes HTML tags such as <ul>, <li>, <h1>, <p>, etc., to structure the content.
+Sending HTML Email: The SNS publish call includes a JSON message with different formats for default and email. For the email, HTML content is specified.
+Error Handling: Consider adding error handling to manage API failures or unexpected data structures more gracefully.
+Remember to replace the SNS topic ARN with your actual topic ARN and ensure your IAM role has the necessary permissions for SSM, EC2, and SNS. Also, make sure the email subscription in SNS is confirmed to receive the notifications.
+
+User
+Use SES instead of SNS in above code
+ChatGPT
+To switch from using Amazon SNS to Amazon SES (Simple Email Service) for sending HTML emails in the updated Lambda function, you will need to make several changes. Amazon SES allows for more customization of emails, including HTML content and direct handling of email addresses.
+
+Here are the steps and modifications to the Python code:
+
+Setup SES: Before using SES, ensure that the email address you intend to send emails from is verified in the SES console. Additionally, if you're using SES in a region that requires it, move out of the SES sandbox (which restricts you to verified emails) by applying to increase your SES sending limits.
+
+Modify the Python Lambda Function: Replace the SNS client and publishing logic with SES for sending HTML emails.
+
+Here's the updated code to use SES:
+
+python
+Copy code
+import boto3
+from datetime import datetime, timedelta
+
+# Initialize boto3 clients
+ssm = boto3.client('ssm')
+ses = boto3.client('ses')
+
+def lambda_handler(event, context):
+    now = datetime.utcnow()
+    end_time = now + timedelta(days=7)
+
+    windows = ssm.describe_maintenance_windows(
+        Filters=[
+            {'Key': 'Enabled', 'Values': ['True']},
+            {'Key': 'Cutoff', 'Values': ['0']}
+        ],
+        WindowType='AUTOMATIC'
+    )
+
+    maintenance_info = []
+    for window in windows.get('WindowIdentities', []):
+        window_id = window['WindowId']
+        schedule = ssm.get_maintenance_window(WindowId=window_id)
+        schedule_time = datetime.strptime(schedule['Window']['NextExecutionTime'], '%Y-%m-%dT%H:%M:%SZ')
+        if now <= schedule_time <= end_time:
+            targets = ssm.describe_maintenance_window_targets(
+                WindowId=window_id,
+                ResourceType='INSTANCE'
+            )
+            
+            target_info_html = "<ul>"
+            for target in targets.get('Targets', []):
+                for key in target['Targets']:
+                    if key['Key'] == 'InstanceIds':
+                        instance_ids = key['Values']
+                        ec2 = boto3.client('ec2')
+                        instances = ec2.describe_instances(InstanceIds=instance_ids)
+                        for reservation in instances['Reservations']:
+                            for instance in reservation['Instances']:
+                                instance_info = f"<li>Instance ID: {instance['InstanceId']}, Type: {instance['InstanceType']}, Launch Time: {instance['LaunchTime'].strftime('%Y-%m-%d %H:%M:%S')}</li>"
+                                target_info_html += instance_info
+            target_info_html += "</ul>"
+            maintenance_info.append(f"<h3>Maintenance Window ID: {window_id}</h3><p>Scheduled Time: {schedule_time}</p>{target_info_html}")
+
+    if maintenance_info:
+        message_html = "<html><body><h1>Upcoming SSM Maintenance Notifications:</h1>" + "".join(maintenance_info) + "</body></html>"
+    else:
+        message_html = "<html><body><h1>No SSM maintenance scheduled in the next 7 days.</h1></body></html>"
+
+    # Sending the email through SES
+    response = ses.send_email(
+        Source='sender@example.com',
+        Destination={
+            'ToAddresses': [
+                'recipient@example.com'
+            ]
+        },
+        Message={
+            'Subject': {
+                'Data': 'SSM Maintenance Alert',
+                'Charset': 'UTF-8'
+            },
+            'Body': {
+                'Html': {
+                    'Data': message_html,
+                    'Charset': 'UTF-8'
+                }
+            }
+        }
+    )
+
+    return response
+Key Points:
+SES Client: Use the SES client to send emails.
+Email Verification: Ensure that the sender and recipient email addresses are verified if you are in the SES sandbox environment.
+HTML Email: The email body is sent as HTML, which allows for rich formatting.
+Permissions: Your Lambda function's execution role must have permissions to use both SSM and SES APIs. Add policies like AmazonSSMReadOnlyAccess and AmazonSESFullAccess to the role.
+This script assumes you have configured SES and verified your email addresses. Remember to replace sender@example.com and recipient@example.com with your actual email addresses. This function will handle sending formatted maintenance notifications directly through email using SES.
