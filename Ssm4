@@ -1,0 +1,71 @@
+import boto3
+
+def lambda_handler(event, context):
+    ses_client = boto3.client('ses')
+    sender_email = "sender@example.com"  # Replace with your email
+    recipient_email = "recipient@example.com"  # Replace with recipient's email
+    aws_region = "us-east-1"  # Update to your AWS region
+
+    # HTML body with data in a table format
+    html_body = """
+    <html>
+        <head></head>
+        <body>
+            <h1>Data Table</h1>
+            <table border='1'>
+                <tr>
+                    <th>Name</th>
+                    <th>Age</th>
+                    <th>City</th>
+                </tr>
+                <tr>
+                    <td>Alice</td>
+                    <td>25</td>
+                    <td>New York</td>
+                </tr>
+                <tr>
+                    <td>Bob</td>
+                    <td>30</td>
+                    <td>Los Angeles</td>
+                </tr>
+            </table>
+        </body>
+    </html>
+    """
+    subject = "HTML Table Example"
+
+    # The email body for recipients with non-HTML email clients.
+    text_body = """
+    Hi,
+
+    This is the data:
+    Name: Alice, Age: 25, City: New York
+    Name: Bob, Age: 30, City: Los Angeles
+
+    Regards,
+    Your Company Name
+    """
+
+    # Try to send the email.
+    try:
+        response = ses_client.send_email(
+            Source=sender_email,
+            Destination={'ToAddresses': [recipient_email]},
+            Message={
+                'Subject': {'Data': subject},
+                'Body': {
+                    'Text': {'Data': text_body},
+                    'Html': {'Data': html_body}
+                }
+            }
+        )
+        print("Email sent! Message ID:"),
+        print(response['MessageId'])
+    except Exception as e:
+        print("Error sending email")
+        print(e)
+
+    return {
+        'statusCode': 200,
+        'body': "Email sent successfully!"
+    }
