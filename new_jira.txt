@@ -1,0 +1,712 @@
+Write a Lambda code in Python that creates a Jira ticket on the CloudWatch alert trigger?
+The Lambda function should also use a DynamoDB table which stores the details of the Jira ticket created.
+Lambda should check if a Jira ticket already exists for the triggered cloudwatch alarm, if it does it should add a comment, if not it should create a ticket and resolve the ticket automatically if the alert moves to OK state.
+ChatGPT
+To achieve this, you'll need to use AWS Lambda, AWS DynamoDB, and Jira's REST API. The Lambda function will handle the creation of Jira tickets and updating them based on the CloudWatch alarm state.
+
+Here is an example of how you can implement this:
+
+Lambda Function Code: The code will use AWS SDK (Boto3) for DynamoDB interactions and the requests library for making HTTP requests to the Jira API. Make sure you have the appropriate permissions set for the Lambda function to interact with DynamoDB and CloudWatch.
+
+DynamoDB Table: The table will store details of the Jira tickets with the CloudWatch alarm name as the key.
+
+Jira API: You'll need to create an API token in Jira and use it for authentication.
+
+Here's a sample implementation of the Lambda function:
+
+python
+Copy code
+import json
+import boto3
+import requests
+from botocore.exceptions import ClientError
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('YourDynamoDBTableName')
+
+JIRA_BASE_URL = 'https://your-domain.atlassian.net'
+JIRA_API_TOKEN = 'your_jira_api_token'
+JIRA_USER_EMAIL = 'your_email@example.com'
+JIRA_PROJECT_KEY = 'YOUR_PROJECT_KEY'
+JIRA_ISSUE_TYPE = 'Task'
+
+def lambda_handler(event, context):
+    cloudwatch_alarm = event['detail']['alarmName']
+    alarm_state = event['detail']['state']['value']
+
+    try:
+        response = table.get_item(Key={'AlarmName': cloudwatch_alarm})
+    except ClientError as e:
+        print(e.response['Error']['Message'])
+        return {'statusCode': 500, 'body': json.dumps('Error getting item from DynamoDB')}
+    
+    if 'Item' in response:
+        jira_ticket_id = response['Item']['JiraTicketId']
+        if alarm_state == 'ALARM':
+            add_comment_to_jira_ticket(jira_ticket_id, 'Alarm is still in ALARM state.')
+        elif alarm_state == 'OK':
+            resolve_jira_ticket(jira_ticket_id)
+    else:
+        if alarm_state == 'ALARM':
+            jira_ticket_id = create_jira_ticket(cloudwatch_alarm)
+            if jira_ticket_id:
+                table.put_item(Item={'AlarmName': cloudwatch_alarm, 'JiraTicketId': jira_ticket_id})
+
+    return {'statusCode': 200, 'body': json.dumps('Lambda executed successfully')}
+
+def create_jira_ticket(alarm_name):
+    url = f'{JIRA_BASE_URL}/rest/api/3/issue'
+    auth = (JIRA_USER_EMAIL, JIRA_API_TOKEN)
+    headers = {'Content-Type': 'application/json'}
+    payload = {
+        'fields': {
+            'project': {
+                'key': JIRA_PROJECT_KEY
+            },
+            'summary': f'CloudWatch Alarm: {alarm_name}',
+            'description': f'This ticket is created for the CloudWatch alarm: {alarm_name}',
+            'issuetype': {
+                'name': JIRA_ISSUE_TYPE
+            }
+        }
+    }
+    response = requests.post(url, auth=auth, headers=headers, data=json.dumps(payload))
+    if response.status_code == 201:
+        return response.json()['key']
+    else:
+        print(f'Failed to create Jira ticket: {response.status_code} {response.text}')
+        return None
+
+def add_comment_to_jira_ticket(ticket_id, comment):
+    url = f'{JIRA_BASE_URL}/rest/api/3/issue/{ticket_id}/comment'
+    auth = (JIRA_USER_EMAIL, JIRA_API_TOKEN)
+    headers = {'Content-Type': 'application/json'}
+    payload = {
+        'body': comment
+    }
+    response = requests.post(url, auth=auth, headers=headers, data=json.dumps(payload))
+    if response.status_code != 201:
+        print(f'Failed to add comment to Jira ticket: {response.status_code} {response.text}')
+
+def resolve_jira_ticket(ticket_id):
+    url = f'{JIRA_BASE_URL}/rest/api/3/issue/{ticket_id}/transitions'
+    auth = (JIRA_USER_EMAIL, JIRA_API_TOKEN)
+    headers = {'Content-Type': 'application/json'}
+    # You need to find the correct transition ID for resolving the ticket. 
+    # This can vary based on your Jira setup. Replace '3' with the correct transition ID.
+    payload = {
+        'transition': {
+            'id': '3'
+        }
+    }
+    response = requests.post(url, auth=auth, headers=headers, data=json.dumps(payload))
+    if response.status_code != 204:
+        print(f'Failed to resolve Jira ticket: {response.status_code} {response.text}')
+Notes:
+
+Replace YourDynamoDBTableName with the actual name of your DynamoDB table.
+Replace the Jira-related placeholders (your-domain.atlassian.net, your_jira_api_token, your_email@example.com, YOUR_PROJECT_KEY, Task) with your actual Jira instance details.
+Ensure you have the necessary IAM permissions for the Lambda function to interact with DynamoDB and CloudWatch.
+The transition ID for resolving the Jira ticket needs to be determined based on your Jira workflow.
+To deploy this, you'll need to package your Lambda function with the required dependencies (like requests), and upload it to AWS Lambda. Ensure that your function has the necessary IAM roles attached to access DynamoDB and handle CloudWatch events.
+
+How does DynamoDB table schema needs to be defined in above case?
+ChatGPT
+In this case, the DynamoDB table schema needs to be defined to store the details of the CloudWatch alarms and their corresponding Jira tickets. You only need a few attributes: the primary key (alarm name) and the Jira ticket ID.
+
+Here's a simple schema definition for the DynamoDB table:
+
+DynamoDB Table Schema
+Table Name: YourDynamoDBTableName
+Primary Key: AlarmName (Partition Key)
+Attributes
+AlarmName: String - The name of the CloudWatch alarm. This will be used as the partition key to uniquely identify each alarm.
+JiraTicketId: String - The ID of the Jira ticket associated with the alarm.
+Example Table Definition in AWS Console
+Table Name: CloudWatchAlarms
+Partition Key: AlarmName (String)
+You can create the table using the AWS Management Console, AWS CLI, or through a CloudFormation template. Here’s an example of how to create the table using the AWS CLI:
+
+sh
+Copy code
+aws dynamodb create-table \
+    --table-name CloudWatchAlarms \
+    --attribute-definitions AttributeName=AlarmName,AttributeType=S \
+    --key-schema AttributeName=AlarmName,KeyType=HASH \
+    --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5
+Example Table Definition using AWS CloudFormation
+yaml
+Copy code
+Resources:
+  CloudWatchAlarmsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: CloudWatchAlarms
+      AttributeDefinitions:
+        - AttributeName: AlarmName
+          AttributeType: S
+      KeySchema:
+        - AttributeName: AlarmName
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+Example Table Definition using Boto3 in Python
+If you prefer to create the table programmatically using Boto3 in Python, here’s an example script:
+
+python
+Copy code
+import boto3
+
+dynamodb = boto3.resource('dynamodb')
+
+table_name = 'CloudWatchAlarms'
+
+# Create the DynamoDB table
+table = dynamodb.create_table(
+    TableName=table_name,
+    KeySchema=[
+        {
+            'AttributeName': 'AlarmName',
+            'KeyType': 'HASH'  # Partition key
+        }
+    ],
+    AttributeDefinitions=[
+        {
+            'AttributeName': 'AlarmName',
+            'AttributeType': 'S'
+        }
+    ],
+    ProvisionedThroughput={
+        'ReadCapacityUnits': 5,
+        'WriteCapacityUnits': 5
+    }
+)
+
+# Wait until the table exists.
+table.meta.client.get_waiter('table_exists').wait(TableName=table_name)
+
+print(f'Table {table_name} created successfully.')
+DynamoDB Table Example Items
+Here’s how the items in the table might look:
+
+AlarmName	JiraTicketId
+CPUHighAlarm	JIRA-1234
+MemoryHighAlarm	JIRA-5678
+With this schema, the Lambda function can efficiently query, insert, and update the table based on the CloudWatch alarm events.
+
+I want to add account ID as a attribute to DynamoDB table and add in the lambda search as well, can you update the code accordingly?
+ChatGPT
+Certainly! We can update the DynamoDB table schema to include the AccountId attribute and modify the Lambda function to handle this new attribute. The AccountId will be part of the key schema to ensure that alarms are unique per AWS account.
+
+DynamoDB Table Schema
+Table Name: YourDynamoDBTableName
+Primary Key: Composite Key consisting of AccountId (Partition Key) and AlarmName (Sort Key)
+Attributes
+AccountId: String - The AWS account ID where the alarm is triggered. This will be used as the partition key.
+AlarmName: String - The name of the CloudWatch alarm. This will be used as the sort key.
+JiraTicketId: String - The ID of the Jira ticket associated with the alarm.
+Updated Table Definition using AWS CLI
+sh
+Copy code
+aws dynamodb create-table \
+    --table-name CloudWatchAlarms \
+    --attribute-definitions \
+        AttributeName=AccountId,AttributeType=S \
+        AttributeName=AlarmName,AttributeType=S \
+    --key-schema \
+        AttributeName=AccountId,KeyType=HASH \
+        AttributeName=AlarmName,KeyType=RANGE \
+    --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5
+Updated Table Definition using AWS CloudFormation
+yaml
+Copy code
+Resources:
+  CloudWatchAlarmsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: CloudWatchAlarms
+      AttributeDefinitions:
+        - AttributeName: AccountId
+          AttributeType: S
+        - AttributeName: AlarmName
+          AttributeType: S
+      KeySchema:
+        - AttributeName: AccountId
+          KeyType: HASH
+        - AttributeName: AlarmName
+          KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+Updated Lambda Function Code
+The Lambda function will be updated to handle the AccountId attribute, ensuring that the alarm search and ticket creation are based on both AccountId and AlarmName.
+
+python
+Copy code
+import json
+import boto3
+import requests
+from botocore.exceptions import ClientError
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('YourDynamoDBTableName')
+
+JIRA_BASE_URL = 'https://your-domain.atlassian.net'
+JIRA_API_TOKEN = 'your_jira_api_token'
+JIRA_USER_EMAIL = 'your_email@example.com'
+JIRA_PROJECT_KEY = 'YOUR_PROJECT_KEY'
+JIRA_ISSUE_TYPE = 'Task'
+
+def lambda_handler(event, context):
+    account_id = event['account']
+    cloudwatch_alarm = event['detail']['alarmName']
+    alarm_state = event['detail']['state']['value']
+
+    try:
+        response = table.get_item(Key={'AccountId': account_id, 'AlarmName': cloudwatch_alarm})
+    except ClientError as e:
+        print(e.response['Error']['Message'])
+        return {'statusCode': 500, 'body': json.dumps('Error getting item from DynamoDB')}
+    
+    if 'Item' in response:
+        jira_ticket_id = response['Item']['JiraTicketId']
+        if alarm_state == 'ALARM':
+            add_comment_to_jira_ticket(jira_ticket_id, 'Alarm is still in ALARM state.')
+        elif alarm_state == 'OK':
+            resolve_jira_ticket(jira_ticket_id)
+    else:
+        if alarm_state == 'ALARM':
+            jira_ticket_id = create_jira_ticket(cloudwatch_alarm)
+            if jira_ticket_id:
+                table.put_item(Item={'AccountId': account_id, 'AlarmName': cloudwatch_alarm, 'JiraTicketId': jira_ticket_id})
+
+    return {'statusCode': 200, 'body': json.dumps('Lambda executed successfully')}
+
+def create_jira_ticket(alarm_name):
+    url = f'{JIRA_BASE_URL}/rest/api/3/issue'
+    auth = (JIRA_USER_EMAIL, JIRA_API_TOKEN)
+    headers = {'Content-Type': 'application/json'}
+    payload = {
+        'fields': {
+            'project': {
+                'key': JIRA_PROJECT_KEY
+            },
+            'summary': f'CloudWatch Alarm: {alarm_name}',
+            'description': f'This ticket is created for the CloudWatch alarm: {alarm_name}',
+            'issuetype': {
+                'name': JIRA_ISSUE_TYPE
+            }
+        }
+    }
+    response = requests.post(url, auth=auth, headers=headers, data=json.dumps(payload))
+    if response.status_code == 201:
+        return response.json()['key']
+    else:
+        print(f'Failed to create Jira ticket: {response.status_code} {response.text}')
+        return None
+
+def add_comment_to_jira_ticket(ticket_id, comment):
+    url = f'{JIRA_BASE_URL}/rest/api/3/issue/{ticket_id}/comment'
+    auth = (JIRA_USER_EMAIL, JIRA_API_TOKEN)
+    headers = {'Content-Type': 'application/json'}
+    payload = {
+        'body': comment
+    }
+    response = requests.post(url, auth=auth, headers=headers, data=json.dumps(payload))
+    if response.status_code != 201:
+        print(f'Failed to add comment to Jira ticket: {response.status_code} {response.text}')
+
+def resolve_jira_ticket(ticket_id):
+    url = f'{JIRA_BASE_URL}/rest/api/3/issue/{ticket_id}/transitions'
+    auth = (JIRA_USER_EMAIL, JIRA_API_TOKEN)
+    headers = {'Content-Type': 'application/json'}
+    # You need to find the correct transition ID for resolving the ticket. 
+    # This can vary based on your Jira setup. Replace '3' with the correct transition ID.
+    payload = {
+        'transition': {
+            'id': '3'
+        }
+    }
+    response = requests.post(url, auth=auth, headers=headers, data=json.dumps(payload))
+    if response.status_code != 204:
+        print(f'Failed to resolve Jira ticket: {response.status_code} {response.text}')
+DynamoDB Table Example Items
+With the updated schema, items in the table might look like this:
+
+AccountId	AlarmName	JiraTicketId
+123456789012	CPUHighAlarm	JIRA-1234
+123456789012	MemoryHighAlarm	JIRA-5678
+This way, the Lambda function checks for the existence of a Jira ticket based on both AccountId and AlarmName, ensuring that alarms are unique per account and handled correctly.
+
+How could we make the code more fault-tolerant and user-friendly?
+ChatGPT
+To make the code more fault-tolerant and user-friendly, we can add the following improvements:
+
+Exception Handling: Add more granular exception handling to manage different types of errors gracefully.
+Logging: Implement logging to capture detailed information about the execution for easier debugging.
+Retries: Use retries with exponential backoff for operations that interact with external services (e.g., DynamoDB and Jira API).
+Environment Variables: Use environment variables for configuration details to make the code more flexible and secure.
+Comments and Documentation: Add comments and documentation to explain the code logic and usage.
+Here's the improved code with these enhancements:
+
+python
+Copy code
+import json
+import boto3
+import requests
+import logging
+import os
+from botocore.exceptions import ClientError
+from time import sleep
+
+# Set up logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Environment variables
+TABLE_NAME = os.getenv('DYNAMODB_TABLE_NAME')
+JIRA_BASE_URL = os.getenv('JIRA_BASE_URL')
+JIRA_API_TOKEN = os.getenv('JIRA_API_TOKEN')
+JIRA_USER_EMAIL = os.getenv('JIRA_USER_EMAIL')
+JIRA_PROJECT_KEY = os.getenv('JIRA_PROJECT_KEY')
+JIRA_ISSUE_TYPE = os.getenv('JIRA_ISSUE_TYPE')
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table(TABLE_NAME)
+
+def lambda_handler(event, context):
+    account_id = event['account']
+    cloudwatch_alarm = event['detail']['alarmName']
+    alarm_state = event['detail']['state']['value']
+
+    try:
+        response = get_item_with_retries({'AccountId': account_id, 'AlarmName': cloudwatch_alarm})
+    except ClientError as e:
+        logger.error(f"Error getting item from DynamoDB: {e.response['Error']['Message']}")
+        return {'statusCode': 500, 'body': json.dumps('Error getting item from DynamoDB')}
+    
+    if 'Item' in response:
+        jira_ticket_id = response['Item']['JiraTicketId']
+        if alarm_state == 'ALARM':
+            add_comment_to_jira_ticket(jira_ticket_id, 'Alarm is still in ALARM state.')
+        elif alarm_state == 'OK':
+            resolve_jira_ticket(jira_ticket_id)
+    else:
+        if alarm_state == 'ALARM':
+            jira_ticket_id = create_jira_ticket(cloudwatch_alarm)
+            if jira_ticket_id:
+                try:
+                    put_item_with_retries({'AccountId': account_id, 'AlarmName': cloudwatch_alarm, 'JiraTicketId': jira_ticket_id})
+                except ClientError as e:
+                    logger.error(f"Error putting item to DynamoDB: {e.response['Error']['Message']}")
+
+    return {'statusCode': 200, 'body': json.dumps('Lambda executed successfully')}
+
+def get_item_with_retries(key, retries=3, backoff=2):
+    for attempt in range(retries):
+        try:
+            response = table.get_item(Key=key)
+            return response
+        except ClientError as e:
+            if attempt < retries - 1:
+                sleep(backoff ** attempt)
+            else:
+                raise e
+
+def put_item_with_retries(item, retries=3, backoff=2):
+    for attempt in range(retries):
+        try:
+            table.put_item(Item=item)
+            return
+        except ClientError as e:
+            if attempt < retries - 1:
+                sleep(backoff ** attempt)
+            else:
+                raise e
+
+def create_jira_ticket(alarm_name):
+    url = f'{JIRA_BASE_URL}/rest/api/3/issue'
+    auth = (JIRA_USER_EMAIL, JIRA_API_TOKEN)
+    headers = {'Content-Type': 'application/json'}
+    payload = {
+        'fields': {
+            'project': {
+                'key': JIRA_PROJECT_KEY
+            },
+            'summary': f'CloudWatch Alarm: {alarm_name}',
+            'description': f'This ticket is created for the CloudWatch alarm: {alarm_name}',
+            'issuetype': {
+                'name': JIRA_ISSUE_TYPE
+            }
+        }
+    }
+    response = make_request_with_retries('POST', url, auth, headers, payload)
+    if response and response.status_code == 201:
+        return response.json()['key']
+    else:
+        logger.error(f'Failed to create Jira ticket: {response.status_code} {response.text}' if response else 'No response from Jira API')
+        return None
+
+def add_comment_to_jira_ticket(ticket_id, comment):
+    url = f'{JIRA_BASE_URL}/rest/api/3/issue/{ticket_id}/comment'
+    auth = (JIRA_USER_EMAIL, JIRA_API_TOKEN)
+    headers = {'Content-Type': 'application/json'}
+    payload = {
+        'body': comment
+    }
+    response = make_request_with_retries('POST', url, auth, headers, payload)
+    if not response or response.status_code != 201:
+        logger.error(f'Failed to add comment to Jira ticket: {response.status_code} {response.text}' if response else 'No response from Jira API')
+
+def resolve_jira_ticket(ticket_id):
+    url = f'{JIRA_BASE_URL}/rest/api/3/issue/{ticket_id}/transitions'
+    auth = (JIRA_USER_EMAIL, JIRA_API_TOKEN)
+    headers = {'Content-Type': 'application/json'}
+    # You need to find the correct transition ID for resolving the ticket. 
+    # This can vary based on your Jira setup. Replace '3' with the correct transition ID.
+    payload = {
+        'transition': {
+            'id': '3'
+        }
+    }
+    response = make_request_with_retries('POST', url, auth, headers, payload)
+    if not response or response.status_code != 204:
+        logger.error(f'Failed to resolve Jira ticket: {response.status_code} {response.text}' if response else 'No response from Jira API')
+
+def make_request_with_retries(method, url, auth, headers, payload, retries=3, backoff=2):
+    for attempt in range(retries):
+        try:
+            if method == 'POST':
+                response = requests.post(url, auth=auth, headers=headers, data=json.dumps(payload))
+            # Add more methods (GET, PUT, etc.) as needed
+            else:
+                raise ValueError(f'Unsupported HTTP method: {method}')
+            
+            if response.status_code < 500:
+                return response
+            else:
+                if attempt < retries - 1:
+                    sleep(backoff ** attempt)
+                else:
+                    response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            logger.error(f'Error making request to Jira API: {e}')
+            if attempt < retries - 1:
+                sleep(backoff ** attempt)
+            else:
+                return None
+Changes and Improvements
+Exception Handling: Added more detailed exception handling for DynamoDB and HTTP request errors.
+Logging: Implemented logging to provide detailed execution information and error messages.
+Retries: Added retry logic with exponential backoff for DynamoDB operations and HTTP requests to Jira API.
+Environment Variables: Configured the Lambda function to use environment variables for configuration details.
+Comments and Documentation: Added comments to explain the code logic.
+Environment Variables in Lambda
+When deploying your Lambda function, configure the following environment variables:
+
+DYNAMODB_TABLE_NAME
+JIRA_BASE_URL
+JIRA_API_TOKEN
+JIRA_USER_EMAIL
+JIRA_PROJECT_KEY
+JIRA_ISSUE_TYPE
+This can be done through the AWS Lambda console under the "Configuration" tab in the "Environment variables" section.
+
+These improvements make the Lambda function more robust, maintainable, and easier to troubleshoot.
+
+
+2/2
+
+Can you also update the Lambda to prettify the Jira task description?
+ChatGPT
+To prettify the Jira task description, we can use Markdown formatting or Jira's native markup language to make the descriptions more readable and informative. We can include details such as the alarm name, account ID, state change information, and a link to the CloudWatch alarm.
+
+Here is the updated Lambda function code with the prettified Jira task description:
+
+python
+Copy code
+import json
+import boto3
+import requests
+import logging
+import os
+from botocore.exceptions import ClientError
+from time import sleep
+
+# Set up logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Environment variables
+TABLE_NAME = os.getenv('DYNAMODB_TABLE_NAME')
+JIRA_BASE_URL = os.getenv('JIRA_BASE_URL')
+JIRA_API_TOKEN = os.getenv('JIRA_API_TOKEN')
+JIRA_USER_EMAIL = os.getenv('JIRA_USER_EMAIL')
+JIRA_PROJECT_KEY = os.getenv('JIRA_PROJECT_KEY')
+JIRA_ISSUE_TYPE = os.getenv('JIRA_ISSUE_TYPE')
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table(TABLE_NAME)
+
+def lambda_handler(event, context):
+    account_id = event['account']
+    cloudwatch_alarm = event['detail']['alarmName']
+    alarm_state = event['detail']['state']['value']
+    alarm_description = event['detail'].get('alarmDescription', 'No description provided')
+    region = event['region']
+    link = f'https://console.aws.amazon.com/cloudwatch/home?region={region}#alarmsV2:alarm/{cloudwatch_alarm}'
+
+    try:
+        response = get_item_with_retries({'AccountId': account_id, 'AlarmName': cloudwatch_alarm})
+    except ClientError as e:
+        logger.error(f"Error getting item from DynamoDB: {e.response['Error']['Message']}")
+        return {'statusCode': 500, 'body': json.dumps('Error getting item from DynamoDB')}
+    
+    if 'Item' in response:
+        jira_ticket_id = response['Item']['JiraTicketId']
+        if alarm_state == 'ALARM':
+            add_comment_to_jira_ticket(jira_ticket_id, 'Alarm is still in ALARM state.')
+        elif alarm_state == 'OK':
+            resolve_jira_ticket(jira_ticket_id)
+    else:
+        if alarm_state == 'ALARM':
+            jira_ticket_id = create_jira_ticket(account_id, cloudwatch_alarm, alarm_description, link, alarm_state)
+            if jira_ticket_id:
+                try:
+                    put_item_with_retries({'AccountId': account_id, 'AlarmName': cloudwatch_alarm, 'JiraTicketId': jira_ticket_id})
+                except ClientError as e:
+                    logger.error(f"Error putting item to DynamoDB: {e.response['Error']['Message']}")
+
+    return {'statusCode': 200, 'body': json.dumps('Lambda executed successfully')}
+
+def get_item_with_retries(key, retries=3, backoff=2):
+    for attempt in range(retries):
+        try:
+            response = table.get_item(Key=key)
+            return response
+        except ClientError as e:
+            if attempt < retries - 1:
+                sleep(backoff ** attempt)
+            else:
+                raise e
+
+def put_item_with_retries(item, retries=3, backoff=2):
+    for attempt in range(retries):
+        try:
+            table.put_item(Item=item)
+            return
+        except ClientError as e:
+            if attempt < retries - 1:
+                sleep(backoff ** attempt)
+            else:
+                raise e
+
+def create_jira_ticket(account_id, alarm_name, alarm_description, link, alarm_state):
+    url = f'{JIRA_BASE_URL}/rest/api/3/issue'
+    auth = (JIRA_USER_EMAIL, JIRA_API_TOKEN)
+    headers = {'Content-Type': 'application/json'}
+    description = (
+        f"*Alarm Name*: {alarm_name}\n"
+        f"*Account ID*: {account_id}\n"
+        f"*State*: {alarm_state}\n"
+        f"*Description*: {alarm_description}\n"
+        f"*Link*: [View Alarm in CloudWatch]({link})"
+    )
+    payload = {
+        'fields': {
+            'project': {
+                'key': JIRA_PROJECT_KEY
+            },
+            'summary': f'CloudWatch Alarm: {alarm_name}',
+            'description': description,
+            'issuetype': {
+                'name': JIRA_ISSUE_TYPE
+            }
+        }
+    }
+    response = make_request_with_retries('POST', url, auth, headers, payload)
+    if response and response.status_code == 201:
+        return response.json()['key']
+    else:
+        logger.error(f'Failed to create Jira ticket: {response.status_code} {response.text}' if response else 'No response from Jira API')
+        return None
+
+def add_comment_to_jira_ticket(ticket_id, comment):
+    url = f'{JIRA_BASE_URL}/rest/api/3/issue/{ticket_id}/comment'
+    auth = (JIRA_USER_EMAIL, JIRA_API_TOKEN)
+    headers = {'Content-Type': 'application/json'}
+    payload = {
+        'body': comment
+    }
+    response = make_request_with_retries('POST', url, auth, headers, payload)
+    if not response or response.status_code != 201:
+        logger.error(f'Failed to add comment to Jira ticket: {response.status_code} {response.text}' if response else 'No response from Jira API')
+
+def resolve_jira_ticket(ticket_id):
+    url = f'{JIRA_BASE_URL}/rest/api/3/issue/{ticket_id}/transitions'
+    auth = (JIRA_USER_EMAIL, JIRA_API_TOKEN)
+    headers = {'Content-Type': 'application/json'}
+    # You need to find the correct transition ID for resolving the ticket. 
+    # This can vary based on your Jira setup. Replace '3' with the correct transition ID.
+    payload = {
+        'transition': {
+            'id': '3'
+        }
+    }
+    response = make_request_with_retries('POST', url, auth, headers, payload)
+    if not response or response.status_code != 204:
+        logger.error(f'Failed to resolve Jira ticket: {response.status_code} {response.text}' if response else 'No response from Jira API')
+
+def make_request_with_retries(method, url, auth, headers, payload, retries=3, backoff=2):
+    for attempt in range(retries):
+        try:
+            if method == 'POST':
+                response = requests.post(url, auth=auth, headers=headers, data=json.dumps(payload))
+            # Add more methods (GET, PUT, etc.) as needed
+            else:
+                raise ValueError(f'Unsupported HTTP method: {method}')
+            
+            if response.status_code < 500:
+                return response
+            else:
+                if attempt < retries - 1:
+                    sleep(backoff ** attempt)
+                else:
+                    response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            logger.error(f'Error making request to Jira API: {e}')
+            if attempt < retries - 1:
+                sleep(backoff ** attempt)
+            else:
+                return None
+Changes and Improvements
+Prettified Description: Updated the create_jira_ticket function to include a formatted description using Markdown. The description now includes:
+
+Alarm Name
+Account ID
+State
+Description (from the CloudWatch alarm)
+Link to the CloudWatch alarm
+Dynamic Description: The description is dynamically constructed based on the event details, making it more informative and user-friendly.
+
+Error Handling and Retries: Ensured that all external calls (DynamoDB and Jira API) are robust with retries and proper error handling.
+
+Environment Variables: Used environment variables to make the configuration more flexible and secure.
+
+Environment Variables in Lambda
+Ensure the following environment variables are set in the Lambda function configuration:
+
+DYNAMODB_TABLE_NAME
+JIRA_BASE_URL
+JIRA_API_TOKEN
+JIRA_USER_EMAIL
+JIRA_PROJECT_KEY
+JIRA_ISSUE_TYPE
+These changes should make the Lambda function more fault-tolerant, user-friendly, and maintainable.
+
+
+
+
+
+
