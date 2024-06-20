@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Change Table Text Color Based on Value</title>
+    <style>
+        .red {
+            color: red;
+        }
+        .green {
+            color: green;
+        }
+        .blue {
+            color: blue;
+        }
+    </style>
+</head>
+<body>
+    <table border="1">
+        <tr>
+            <td>Red</td>
+            <td>Green</td>
+            <td>Blue</td>
+            <td>Yellow</td> <!-- This will not change color as there is no class defined for yellow -->
+        </tr>
+    </table>
+
+    <script>
+        document.querySelectorAll('td').forEach(cell => {
+            const text = cell.textContent.trim().toLowerCase();
+            if (text === 'red') {
+                cell.classList.add('red');
+            } else if (text === 'green') {
+                cell.classList.add('green');
+            } else if (text === 'blue') {
+                cell.classList.add('blue');
+            }
+        });
+    </script>
+</body>
+</html>
