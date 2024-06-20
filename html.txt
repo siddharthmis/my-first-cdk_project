@@ -1,0 +1,79 @@
+Yes, you can achieve this without JavaScript by using CSS only. However, the solution will be more limited and will require that you know the text values in advance. Here's an example using CSS only:
+
+html
+Copy code
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Change Text Color Based on Value</title>
+    <style>
+        .text-red::before {
+            content: 'Red';
+            color: red;
+        }
+        .text-green::before {
+            content: 'Green';
+            color: green;
+        }
+        .text-blue::before {
+            content: 'Blue';
+            color: blue;
+        }
+    </style>
+</head>
+<body>
+    <p class="text-red"></p>
+    <p class="text-green"></p>
+    <p class="text-blue"></p>
+</body>
+</html>
+In this example:
+
+CSS pseudo-elements (::before) are used to insert content before each paragraph.
+The .text-red, .text-green, and .text-blue classes are defined to set the text content and color.
+Paragraphs with these classes will display the corresponding text in the specified color.
+However, this method is quite static and not as flexible as using JavaScript. It is limited to known text values and requires predefined classes for each value. If you need dynamic behavior based on unknown or varying text values, using JavaScript is the more appropriate solution.
+
+
+
+
+
+Can you update the above code in update table data instead of paragraph?
+ChatGPT
+Certainly! Below is an updated version of the previous example that uses a table instead of paragraphs. The table cells will display the text with colors based on their values using CSS only:
+
+html
+Copy code
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Change Table Text Color Based on Value</title>
+    <style>
+        .text-red::before {
+            content: 'Red';
+            color: red;
+        }
+        .text-green::before {
+            content: 'Green';
+            color: green;
+        }
+        .text-blue::before {
+            content: 'Blue';
+            color: blue;
+        }
+    </style>
+</head>
+<body>
+    <table border="1">
+        <tr>
+            <td class="text-red"></td>
+            <td class="text-green"></td>
+            <td class="text-blue"></td>
+        </tr>
+    </table>
+</body>
+</html>
