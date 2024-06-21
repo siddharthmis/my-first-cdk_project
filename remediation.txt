@@ -1,0 +1,69 @@
+import json
+import boto3
+import logging
+import os
+
+# Set up logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Initialize AWS clients
+ssm = boto3.client('ssm')
+sns = boto3.client('sns')
+
+# Environment variables for SSM Automation
+SSM_DOCUMENT_NAME = os.environ.get('SSM_DOCUMENT_NAME', 'YourAutomationDocumentName')
+SNS_TOPIC_ARN = os.environ.get('SNS_TOPIC_ARN', '')
+
+def notify_user(message):
+    if SNS_TOPIC_ARN:
+        try:
+            sns.publish(
+                TopicArn=SNS_TOPIC_ARN,
+                Message=message,
+                Subject='Backup Job Failure Notification'
+            )
+        except Exception as e:
+            logger.error(f"Failed to send notification: {str(e)}")
+
+def lambda_handler(event, context):
+    logger.info("Received event: " + json.dumps(event, indent=2))
+    
+    # Extract backup job details from the event
+    detail = event.get('detail', {})
+    backup_job_id = detail.get('backupJobId')
+    automation_role = detail.get('automationRole')
+    
+    if not backup_job_id or not automation_role:
+        error_message = 'Missing required parameters: backupJobId or automationRole'
+        logger.error(error_message)
+        return {
+            'statusCode': 400,
+            'body': json.dumps(error_message)
+        }
+    
+    try:
+        # Start SSM Automation
+        response = ssm.start_automation_execution(
+            DocumentName=SSM_DOCUMENT_NAME,
+            Parameters={
+                'backupJobId': [backup_job_id],
+                'AutomationRole': [automation_role]
+            }
+        )
+        execution_id = response['AutomationExecutionId']
+        message = f'Started SSM Automation with execution ID: {execution_id} for backup job ID: {backup_job_id}'
+        logger.info(message)
+        notify_user(message)
+        return {
+            'statusCode': 200,
+            'body': json.dumps(message)
+        }
+    except Exception as e:
+        error_message = f'Error starting SSM Automation for backup job ID {backup_job_id}: {str(e)}'
+        logger.error(error_message)
+        notify_user(error_message)
+        return {
+            'statusCode': 500,
+            'body': json.dumps(error_message)
+        }
