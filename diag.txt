@@ -1,0 +1,8 @@
+ CloudWatch Alarm Event --> Lambda Function --> Check DynamoDB
+                                          --> Decision (Entry Exists?)
+                                                  --> Yes --> Decision (Alarm State 'ALARM'?)
+                                                                      --> Yes --> Add Comment to Jira Ticket
+                                                                      --> No --> Resolve Jira Ticket
+                                                  --> No --> Create Jira Ticket and Store Details
+ Retry Logic (for DynamoDB and Jira API interactions)
+ Logging (for errors and responses)
