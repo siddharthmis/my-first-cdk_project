@@ -1,0 +1,177 @@
+{
+    "schemaVersion": "2.2",
+    "description": "Check the status of JBoss service and start it if it is stopped. Log the status to CloudWatch.",
+    "mainSteps": [
+        {
+            "action": "aws:runShellScript",
+            "name": "checkAndStartJBoss",
+            "inputs": {
+                "runCommand": [
+                    "SERVICE_NAME=jboss",
+                    "CW_LOG_GROUP=/aws/ssm/JBossServiceStatus",
+                    "CW_LOG_STREAM=$(hostname)",
+                    "STATUS=$(systemctl is-active $SERVICE_NAME)",
+                    "if [ \"$STATUS\" == \"active\" ]; then",
+                    "  echo \"JBoss service is running\"",
+                    "  MESSAGE=\"JBoss service is running on $(hostname)\"",
+                    "else",
+                    "  echo \"JBoss service is not running. Starting it...\"",
+                    "  systemctl start $SERVICE_NAME",
+                    "  if [ $? -eq 0 ]; then",
+                    "    echo \"JBoss service started successfully\"",
+                    "    MESSAGE=\"JBoss service was stopped and has been started on $(hostname)\"",
+                    "  else",
+                    "    echo \"Failed to start JBoss service\"",
+                    "    MESSAGE=\"Failed to start JBoss service on $(hostname)\"",
+                    "  fi",
+                    "fi",
+                    "aws logs put-log-events --log-group-name $CW_LOG_GROUP --log-stream-name $CW_LOG_STREAM --log-events timestamp=$(date +%s000),message=\"$MESSAGE\""
+                ]
+            }
+        }
+    ]
+}
+
+
+
+
+
+import boto3
+import logging
+import json
+import os
+from botocore.exceptions import NoCredentialsError, PartialCredentialsError, ClientError
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# AWS clients
+ssm_client = boto3.client('ssm')
+fsx_client = boto3.client('fsx')
+
+# Constants
+PARAMETER_NAME = '/ontap/volumes'
+INCREASE_PERCENTAGE_THRESHOLD_1 = 0.05  # 5%
+INCREASE_PERCENTAGE_THRESHOLD_2 = 0.10  # 10%
+INCREASE_SIZE_LIMIT = 2048 * 1024**3  # 2TB in bytes
+
+def get_fsx_volumes():
+    """Fetches all FSx volumes."""
+    try:
+        response = fsx_client.describe_file_systems()
+        volumes = response['FileSystems']
+        return volumes
+    except (NoCredentialsError, PartialCredentialsError) as e:
+        logging.error("AWS credentials not found: %s", e)
+        raise
+    except ClientError as e:
+        logging.error("Failed to describe FSx file systems: %s", e)
+        raise
+    except Exception as e:
+        logging.error("An unexpected error occurred: %s", e)
+        raise
+
+def get_existing_volume_details():
+    """Fetches existing volume details from AWS Systems Manager Parameter Store."""
+    try:
+        response = ssm_client.get_parameter(Name=PARAMETER_NAME)
+        return json.loads(response['Parameter']['Value'])
+    except ssm_client.exceptions.ParameterNotFound:
+        logging.warning("Parameter not found in Parameter Store: %s", PARAMETER_NAME)
+        return {}
+    except ClientError as e:
+        logging.error("Failed to get parameter from Parameter Store: %s", e)
+        raise
+    except Exception as e:
+        logging.error("An unexpected error occurred: %s", e)
+        raise
+
+def store_volume_details(volume_details):
+    """Stores volume details in AWS Systems Manager Parameter Store."""
+    try:
+        parameter_value = json.dumps(volume_details)
+        ssm_client.put_parameter(
+            Name=PARAMETER_NAME,
+            Value=parameter_value,
+            Type='String',
+            Overwrite=True
+        )
+        logging.info("Stored volume details in Parameter Store: %s", PARAMETER_NAME)
+    except ClientError as e:
+        logging.error("Failed to store volume details in Parameter Store: %s", e)
+        raise
+    except Exception as e:
+        logging.error("An unexpected error occurred: %s", e)
+        raise
+
+def calculate_new_size(total_capacity, used_capacity):
+    """Calculates the new size of the volume based on usage."""
+    try:
+        if used_capacity / total_capacity >= 0.95:
+            increase_by = 0
+            size_5_percent = INCREASE_PERCENTAGE_THRESHOLD_1 * total_capacity
+            size_10_percent = INCREASE_PERCENTAGE_THRESHOLD_2 * total_capacity
+
+            if size_5_percent > INCREASE_SIZE_LIMIT:
+                increase_by = size_5_percent
+            elif size_10_percent < INCREASE_SIZE_LIMIT:
+                increase_by = size_10_percent
+
+            if increase_by > 0:
+                return total_capacity + increase_by
+        return None
+    except ZeroDivisionError as e:
+        logging.error("Division by zero error: %s", e)
+        raise
+    except Exception as e:
+        logging.error("An unexpected error occurred: %s", e)
+        raise
+
+def update_volume_size(volume_id, new_size):
+    """Updates the size of the FSx volume."""
+    try:
+        fsx_client.update_file_system(
+            FileSystemId=volume_id,
+            StorageCapacity=int(new_size / 1024**3)  # Convert bytes to GB
+        )
+        logging.info(f"Updated volume {volume_id} to new size {new_size} bytes")
+        return True
+    except ClientError as e:
+        logging.error(f"Failed to update volume size for {volume_id}: {e}")
+        return False
+    except Exception as e:
+        logging.error("An unexpected error occurred: %s", e)
+        raise
+
+def lambda_handler(event, context):
+    try:
+        volumes = get_fsx_volumes()
+        existing_details = get_existing_volume_details()
+        updated_volumes = {}
+
+        for volume in volumes:
+            volume_id = volume['FileSystemId']
+            total_capacity = volume['StorageCapacity'] * 1024**3  # Convert GB to bytes
+            used_capacity = volume['LustreConfiguration']['DataRepositoryConfiguration']['StorageCapacityUsed'] * 1024**3  # Convert GB to bytes
+
+            new_size = calculate_new_size(total_capacity, used_capacity)
+            if new_size:
+                if update_volume_size(volume_id, new_size):
+                    updated_volumes[volume_id] = {
+                        'volume_name': volume_id,
+                        'volume_id': volume_id,
+                        'new_size': int(new_size),
+                        'used_capacity': used_capacity,
+                        'total_capacity': int(new_size)
+                    }
+
+        if updated_volumes:
+            store_volume_details(updated_volumes)
+    except Exception as e:
+        logging.error("Failed to process volumes: %s", e)
+        raise
+
+# Example usage
+if __name__ == "__main__":
+    test_event = {}
+    lambda_handler(test_event, None)
