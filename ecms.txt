@@ -1,0 +1,48 @@
+policies:
+  - name: check-and-start-jboss
+    resource: aws.ec2
+    filters:
+      - "tag:Environment": "Production"  # Change the tag filter as per your requirement
+    actions:
+      - type: send-command
+        parameters:
+          DocumentName: AWS-RunShellScript
+          DocumentVersion: "1"
+          TimeoutSeconds: 3600
+          CloudWatchOutputConfig:
+            CloudWatchLogGroupName: /aws/ssm/JBossServiceStatus
+            CloudWatchOutputEnabled: true
+          Parameters:
+            workingDirectory: "/tmp"
+            executionTimeout: ["3600"]
+            commands: |
+              SERVICE_NAME=jboss
+              CW_LOG_GROUP=/aws/ssm/JBossServiceStatus
+              CW_LOG_STREAM=$(hostname)
+              STATUS=$(pgrep -f $SERVICE_NAME)
+              
+              if [ -n "$STATUS" ]; then
+                MESSAGE="JBoss service is running on $(hostname)"
+              else
+                systemctl start $SERVICE_NAME
+                if [ $? -eq 0 ]; then
+                  MESSAGE="JBoss service was stopped and has been started on $(hostname)"
+                else
+                  MESSAGE="Failed to start JBoss service on $(hostname)"
+                fi
+              fi
+
+              # Check if log group exists
+              aws logs describe-log-groups --log-group-name-prefix $CW_LOG_GROUP | grep $CW_LOG_GROUP
+              if [ $? -ne 0 ]; then
+                aws logs create-log-group --log-group-name $CW_LOG_GROUP
+              fi
+
+              # Check if log stream exists
+              aws logs describe-log-streams --log-group-name $CW_LOG_GROUP --log-stream-name-prefix $CW_LOG_STREAM | grep $CW_LOG_STREAM
+              if [ $? -ne 0 ]; then
+                aws logs create-log-stream --log-group-name $CW_LOG_GROUP --log-stream-name $CW_LOG_STREAM
+              fi
+
+              # Put log event
+              aws logs put-log-events --log-group-name $CW_LOG_GROUP --log-stream-name $CW_LOG_STREAM --log-events timestamp=$(date +%s000),message="$MESSAGE"
