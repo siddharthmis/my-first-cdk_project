@@ -36,6 +36,64 @@
 
 
 
+
+
+{
+    "schemaVersion": "2.2",
+    "description": "Check the status of JBoss service and start it if it is stopped. Log the status to CloudWatch.",
+    "mainSteps": [
+        {
+            "action": "aws:runShellScript",
+            "name": "checkAndStartJBoss",
+            "inputs": {
+                "runCommand": [
+                    "SERVICE_NAME=jboss",
+                    "CW_LOG_GROUP=/aws/ssm/JBossServiceStatus",
+                    "CW_LOG_STREAM=$(hostname)",
+                    "STATUS=$(pgrep -f $SERVICE_NAME)",
+                    "if [ -n \"$STATUS\" ]; then",
+                    "  echo \"JBoss service is running\"",
+                    "  MESSAGE=\"JBoss service is running on $(hostname)\"",
+                    "else",
+                    "  echo \"JBoss service is not running. Starting it...\"",
+                    "  systemctl start $SERVICE_NAME",
+                    "  if [ $? -eq 0 ]; then",
+                    "    echo \"JBoss service started successfully\"",
+                    "    MESSAGE=\"JBoss service was stopped and has been started on $(hostname)\"",
+                    "  else",
+                    "    echo \"Failed to start JBoss service\"",
+                    "    MESSAGE=\"Failed to start JBoss service on $(hostname)\"",
+                    "  fi",
+                    "fi",
+                    "# Check if log group exists",
+                    "aws logs describe-log-groups --log-group-name-prefix $CW_LOG_GROUP | grep $CW_LOG_GROUP",
+                    "if [ $? -ne 0 ]; then",
+                    "  echo \"Creating log group $CW_LOG_GROUP\"",
+                    "  aws logs create-log-group --log-group-name $CW_LOG_GROUP",
+                    "fi",
+                    "# Check if log stream exists",
+                    "aws logs describe-log-streams --log-group-name $CW_LOG_GROUP --log-stream-name-prefix $CW_LOG_STREAM | grep $CW_LOG_STREAM",
+                    "if [ $? -ne 0 ]; then",
+                    "  echo \"Creating log stream $CW_LOG_STREAM\"",
+                    "  aws logs create-log-stream --log-group-name $CW_LOG_GROUP --log-stream-name $CW_LOG_STREAM",
+                    "fi",
+                    "# Put log event",
+                    "aws logs put-log-events --log-group-name $CW_LOG_GROUP --log-stream-name $CW_LOG_STREAM --log-events timestamp=$(date +%s000),message=\"$MESSAGE\""
+                ]
+            }
+        }
+    ]
+}
+
+
+
+
+
+
+
+
+
+
 import boto3
 import logging
 import json
