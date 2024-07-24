@@ -402,3 +402,49 @@ This updated SSM document checks for PID files in two different specified folder
     ]
 }
 
+
+
+
+{
+    "schemaVersion": "2.2",
+    "description": "Check for presence of PID files in specified directories on Linux EC2 instances.",
+    "parameters": {
+        "PidFilePaths": {
+            "type": "StringList",
+            "description": "List of complete paths of PID files to check"
+        }
+    },
+    "mainSteps": [
+        {
+            "action": "aws:runShellScript",
+            "name": "checkPidFiles",
+            "inputs": {
+                "runCommand": [
+                    "#!/bin/bash",
+                    "all_files_present=true",
+                    "pid_files=\"{{ PidFilePaths }}\"",
+                    "IFS=',' read -r -a pidFilesArray <<< \"$pid_files\"",
+                    "if [ ${#pidFilesArray[@]} -eq 0 ]; then",
+                    "  echo \"No PID files specified. Please provide a list of PID file paths.\"",
+                    "  exit 1",
+                    "fi",
+                    "for pidFile in \"${pidFilesArray[@]}\"; do",
+                    "  pidFile=$(echo $pidFile | xargs)",
+                    "  if [[ ! -f \"$pidFile\" ]]; then",
+                    "    echo \"PID file '$pidFile' is not present.\"",
+                    "    all_files_present=false",
+                    "  else",
+                    "    echo \"PID file '$pidFile' is present.\"",
+                    "  fi",
+                    "done",
+                    "if [ \"$all_files_present\" = true ]; then",
+                    "  echo \"All files are present.\"",
+                    "else",
+                    "  echo \"One or more PID files are missing.\"",
+                    "fi"
+                ]
+            }
+        }
+    ]
+}
+
