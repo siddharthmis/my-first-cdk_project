@@ -708,3 +708,180 @@ def retry(func, retries=MAX_RETRIES, delay=RETRY_DELAY):
             else:
                 logger.error(f"Max retries reached. Error: {e}")
                 raise
+
+
+
+*************************************************************************************************
+
+
+
+import boto3
+import logging
+import time
+from botocore.exceptions import ClientError
+
+# Setup logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+ec2_client = boto3.client('ec2')
+ssm_client = boto3.client('ssm')
+
+# Define the SSM Agent installation scripts
+LINUX_SSM_AGENT_SCRIPT = """#!/bin/bash
+sudo yum install -y amazon-ssm-agent
+sudo systemctl enable amazon-ssm-agent
+sudo systemctl start amazon-ssm-agent
+"""
+
+WINDOWS_SSM_AGENT_SCRIPT = """<powershell>
+$ErrorActionPreference = 'Stop'
+Install-Module -Name AWS.Tools.Installer -Force -Scope CurrentUser
+Install-SSMAgent
+Start-Service AmazonSSMAgent
+</powershell>
+"""
+
+MAX_RETRIES = 3
+RETRY_DELAY = 10  # seconds
+
+def lambda_handler(event, context):
+    instances = get_all_instances()
+    for instance_id, instance_os in instances:
+        if not is_ssm_agent_installed(instance_id):
+            try:
+                logger.info(f"Processing instance {instance_id} ({instance_os})")
+                
+                # Backup the existing user data script
+                original_user_data = retry(lambda: backup_user_data(instance_id))
+                
+                # Stop the instance before updating the user data
+                stop_instance(instance_id)
+                wait_for_instance_state(instance_id, 'stopped')
+
+                # Replace the existing user data script with SSM Agent installation script
+                if instance_os == 'windows':
+                    ssm_agent_script = WINDOWS_SSM_AGENT_SCRIPT
+                else:
+                    ssm_agent_script = LINUX_SSM_AGENT_SCRIPT
+                
+                retry(lambda: update_user_data(instance_id, ssm_agent_script))
+
+                # Start the instance to install SSM Agent
+                start_instance(instance_id)
+                wait_for_instance_state(instance_id, 'running')
+
+                # Wait for the SSM Agent to be installed and the instance to be ready
+                time.sleep(60)  # Adjust the sleep time as needed to ensure the SSM Agent is installed
+
+                # Stop the instance again to restore the original user data
+                stop_instance(instance_id)
+                wait_for_instance_state(instance_id, 'stopped')
+
+                # Restore the original user data script
+                retry(lambda: update_user_data(instance_id, original_user_data))
+
+                # Restart the instance with the original script
+                start_instance(instance_id)
+                wait_for_instance_state(instance_id, 'running')
+
+                logger.info(f"Successfully processed instance {instance_id}")
+            except Exception as e:
+                logger.error(f"Failed to process instance {instance_id}: {e}")
+
+def get_all_instances():
+    instances = []
+    next_token = None
+    try:
+        while True:
+            if next_token:
+                response = ec2_client.describe_instances(NextToken=next_token)
+            else:
+                response = ec2_client.describe_instances()
+            
+            for reservation in response['Reservations']:
+                for instance in reservation['Instances']:
+                    instance_id = instance['InstanceId']
+                    instance_os = 'windows' if 'Platform' in instance and instance['Platform'] == 'windows' else 'linux'
+                    instances.append((instance_id, instance_os))
+            
+            next_token = response.get('NextToken')
+            if not next_token:
+                break
+    except ClientError as e:
+        logger.error(f"Error retrieving instances: {e}")
+    return instances
+
+def is_ssm_agent_installed(instance_id):
+    try:
+        response = ssm_client.describe_instance_information(
+            Filters=[
+                {
+                    'Key': 'InstanceIds',
+                    'Values': [instance_id]
+                }
+            ]
+        )
+        return len(response['InstanceInformationList']) > 0
+    except ClientError as e:
+        logger.error(f"Error checking SSM Agent installation on {instance_id}: {e}")
+        return False
+
+def backup_user_data(instance_id):
+    try:
+        response = ec2_client.describe_instance_attribute(
+            InstanceId=instance_id,
+            Attribute='userData'
+        )
+        if 'UserData' in response and 'Value' in response['UserData']:
+            user_data = base64.b64decode(response['UserData']['Value']).decode('utf-8')
+        else:
+            user_data = ''
+        return user_data
+    except ClientError as e:
+        logger.error(f"Error backing up user data for {instance_id}: {e}")
+        raise
+
+def update_user_data(instance_id, user_data):
+    try:
+        ec2_client.modify_instance_attribute(
+            InstanceId=instance_id,
+            UserData={'Value': user_data}
+        )
+    except ClientError as e:
+        logger.error(f"Error updating user data for {instance_id}: {e}")
+        raise
+
+def stop_instance(instance_id):
+    try:
+        ec2_client.stop_instances(InstanceIds=[instance_id])
+    except ClientError as e:
+        logger.error(f"Error stopping instance {instance_id}: {e}")
+        raise
+
+def start_instance(instance_id):
+    try:
+        ec2_client.start_instances(InstanceIds=[instance_id])
+    except ClientError as e:
+        logger.error(f"Error starting instance {instance_id}: {e}")
+        raise
+
+def wait_for_instance_state(instance_id, state):
+    try:
+        waiter = ec2_client.get_waiter(f'instance_{state}')
+        waiter.wait(InstanceIds=[instance_id])
+    except ClientError as e:
+        logger.error(f"Error waiting for instance {instance_id} to reach state {state}: {e}")
+        raise
+
+def retry(func, retries=MAX_RETRIES, delay=RETRY_DELAY):
+    for attempt in range(retries):
+        try:
+            return func()
+        except Exception as e:
+            if attempt < retries - 1:
+                logger.warning(f"Retrying due to error: {e}")
+                time.sleep(delay)
+            else:
+                logger.error(f"Max retries reached. Error: {e}")
+                raise
