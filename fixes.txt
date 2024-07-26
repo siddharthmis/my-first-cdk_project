@@ -1,0 +1,540 @@
+import json
+import boto3
+import requests
+import logging
+import os
+from botocore.exceptions import ClientError
+from time import sleep
+from datetime import datetime, timedelta
+
+# Set up logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Environment variables
+TABLE_NAME = os.getenv('DYNAMODB_TABLE_NAME')
+JIRA_BASE_URL = os.getenv('JIRA_BASE_URL')
+JIRA_API_TOKEN = os.getenv('JIRA_API_TOKEN')
+JIRA_USER_EMAIL = os.getenv('JIRA_USER_EMAIL')
+JIRA_PROJECT_KEY = os.getenv('JIRA_PROJECT_KEY')
+JIRA_ISSUE_TYPE = os.getenv('JIRA_ISSUE_TYPE')
+EXCLUSION_TAG_KEY = os.getenv('EXCLUSION_TAG_KEY', 'ExcludeFromAutomation')
+EXCLUSION_TAG_VALUE = os.getenv('EXCLUSION_TAG_VALUE', 'true')
+
+dynamodb = boto3.resource('dynamodb')
+cloudwatch = boto3.client('cloudwatch')
+table = dynamodb.Table(TABLE_NAME)
+
+def lambda_handler(event, context):
+    account_id = event['account']
+    cloudwatch_alarm = event['detail']['alarmName']
+    alarm_state = event['detail']['state']['value']
+    alarm_description = event['detail'].get('alarmDescription', 'No description provided')
+    region = event['region']
+    link = f'https://console.aws.amazon.com/cloudwatch/home?region={region}#alarmsV2:alarm/{cloudwatch_alarm}'
+    current_date = datetime.utcnow().date().isoformat()
+
+    # Check if the alarm has the exclusion tag
+    if is_alarm_excluded(cloudwatch_alarm):
+        logger.info(f"Alarm {cloudwatch_alarm} is excluded from automation.")
+        return {'statusCode': 200, 'body': json.dumps('Alarm is excluded from automation')}
+
+    try:
+        response = get_item_with_retries({'AccountId': account_id, 'AlarmName': cloudwatch_alarm})
+    except ClientError as e:
+        logger.error(f"Error getting item from DynamoDB: {e.response['Error']['Message']}")
+        return {'statusCode': 500, 'body': json.dumps('Error getting item from DynamoDB')}
+    
+    if 'Item' in response:
+        jira_ticket_id = response['Item']['JiraTicketId']
+        last_updated = response['Item'].get('LastUpdated')
+        if last_updated:
+            last_updated_date = datetime.fromisoformat(last_updated).date().isoformat()
+        else:
+            last_updated_date = None
+
+        if last_updated_date == current_date:
+            # Add comment to existing ticket
+            if alarm_state == 'ALARM':
+                add_comment_to_jira_ticket(jira_ticket_id, f'Alarm is still in ALARM state at {datetime.utcnow().isoformat()}.')
+            elif alarm_state == 'OK':
+                add_comment_to_jira_ticket(jira_ticket_id, f'Alarm returned to OK state at {datetime.utcnow().isoformat()}.')
+        else:
+            # Create new ticket for a new day
+            if alarm_state == 'ALARM':
+                jira_ticket_id = create_jira_ticket(account_id, cloudwatch_alarm, alarm_description, link, alarm_state)
+                if jira_ticket_id:
+                    try:
+                        put_item_with_retries({
+                            'AccountId': account_id,
+                            'AlarmName': cloudwatch_alarm,
+                            'JiraTicketId': jira_ticket_id,
+                            'LastUpdated': current_date
+                        })
+                    except ClientError as e:
+                        logger.error(f"Error putting item to DynamoDB: {e.response['Error']['Message']}")
+    else:
+        if alarm_state == 'ALARM':
+            jira_ticket_id = create_jira_ticket(account_id, cloudwatch_alarm, alarm_description, link, alarm_state)
+            if jira_ticket_id:
+                try:
+                    put_item_with_retries({
+                        'AccountId': account_id,
+                        'AlarmName': cloudwatch_alarm,
+                        'JiraTicketId': jira_ticket_id,
+                        'LastUpdated': current_date
+                    })
+                except ClientError as e:
+                    logger.error(f"Error putting item to DynamoDB: {e.response['Error']['Message']}")
+
+    return {'statusCode': 200, 'body': json.dumps('Lambda executed successfully')}
+
+def is_alarm_excluded(alarm_name):
+    """Check if the alarm has the exclusion tag."""
+    try:
+        response = cloudwatch.list_tags_for_resource(
+            ResourceARN=f'arn:aws:cloudwatch:{os.getenv("AWS_REGION")}:{os.getenv("AWS_ACCOUNT_ID")}:alarm:{alarm_name}'
+        )
+        tags = response.get('Tags', [])
+        for tag in tags:
+            if tag['Key'] == EXCLUSION_TAG_KEY and tag['Value'] == EXCLUSION_TAG_VALUE:
+                return True
+    except ClientError as e:
+        logger.error(f"Error fetching tags for alarm {alarm_name}: {e.response['Error']['Message']}")
+        return False
+    return False
+
+def get_item_with_retries(key, retries=3, backoff=2):
+    for attempt in range(retries):
+        try:
+            response = table.get_item(Key=key)
+            return response
+        except ClientError as e:
+            if attempt < retries - 1:
+                sleep(backoff ** attempt)
+            else:
+                raise e
+
+def put_item_with_retries(item, retries=3, backoff=2):
+    for attempt in range(retries):
+        try:
+            table.put_item(Item=item)
+            return
+        except ClientError as e:
+            if attempt < retries - 1:
+                sleep(backoff ** attempt)
+            else:
+                raise e
+
+def create_jira_ticket(account_id, alarm_name, alarm_description, link, alarm_state):
+    url = f'{JIRA_BASE_URL}/rest/api/3/issue'
+    auth = (JIRA_USER_EMAIL, JIRA_API_TOKEN)
+    headers = {'Content-Type': 'application/json'}
+    description = (
+        f"*Alarm Name*: {alarm_name}\n"
+        f"*Account ID*: {account_id}\n"
+        f"*State*: {alarm_state}\n"
+        f"*Description*: {alarm_description}\n"
+        f"*Link*: [View Alarm in CloudWatch]({link})"
+    )
+    payload = {
+        'fields': {
+            'project': {
+                'key': JIRA_PROJECT_KEY
+            },
+            'summary': f'CloudWatch Alarm: {alarm_name}',
+            'description': description,
+            'issuetype': {
+                'name': JIRA_ISSUE_TYPE
+            }
+        }
+    }
+    response = make_request_with_retries('POST', url, auth, headers, payload)
+    if response and response.status_code == 201:
+        return response.json()['key']
+    else:
+        logger.error(f'Failed to create Jira ticket: {response.status_code} {response.text}' if response else 'No response from Jira API')
+        return None
+
+def add_comment_to_jira_ticket(ticket_id, comment):
+    url = f'{JIRA_BASE_URL}/rest/api/3/issue/{ticket_id}/comment'
+    auth = (JIRA_USER_EMAIL, JIRA_API_TOKEN)
+    headers = {'Content-Type': 'application/json'}
+    payload = {
+        'body': comment
+    }
+    response = make_request_with_retries('POST', url, auth, headers, payload)
+    if not response or response.status_code != 201:
+        logger.error(f'Failed to add comment to Jira ticket: {response.status_code} {response.text}' if response else 'No response from Jira API')
+
+def resolve_jira_ticket(ticket_id):
+    url = f'{JIRA_BASE_URL}/rest/api/3/issue/{ticket_id}/transitions'
+    auth = (JIRA_USER_EMAIL, JIRA_API_TOKEN)
+    headers = {'Content-Type': 'application/json'}
+    # You need to find the correct transition ID for resolving the ticket. 
+    # This can vary based on your Jira setup. Replace '3' with the correct transition ID.
+    payload = {
+        'transition': {
+            'id': '3'
+        }
+    }
+    response = make_request_with_retries('POST', url, auth, headers, payload)
+    if not response or response.status_code != 204:
+        logger.error(f'Failed to resolve Jira ticket: {response.status_code} {response.text}' if response else 'No response from Jira API')
+
+def make_request_with_retries(method, url, auth, headers, payload, retries=3, backoff=2):
+    for attempt in range(retries):
+        try:
+            if method == 'POST':
+                response = requests.post(url, auth=auth, headers=headers, data=json.dumps(payload))
+            # Add more methods (GET, PUT, etc.) as needed
+            else:
+                raise ValueError(f'Unsupported HTTP method: {method}')
+            
+            if response.status_code < 500:
+                return response
+            else:
+                if attempt < retries - 1:
+                    sleep(back
+
+
+
+
+
+
+##############################################################
+
+
+import boto3
+import logging
+import time
+from botocore.exceptions import ClientError
+
+# Setup logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+ec2_client = boto3.client('ec2')
+ssm_client = boto3.client('ssm')
+
+# Define the SSM Agent installation scripts
+LINUX_SSM_AGENT_SCRIPT = """#!/bin/bash
+sudo yum install -y amazon-ssm-agent
+sudo systemctl enable amazon-ssm-agent
+sudo systemctl start amazon-ssm-agent
+"""
+
+WINDOWS_SSM_AGENT_SCRIPT = """<powershell>
+$ErrorActionPreference = 'Stop'
+Install-Module -Name AWS.Tools.Installer -Force -Scope CurrentUser
+Install-SSMAgent
+Start-Service AmazonSSMAgent
+</powershell>
+"""
+
+MAX_RETRIES = 3
+RETRY_DELAY = 10  # seconds
+
+def lambda_handler(event, context):
+    instances = get_all_instances()
+    for instance_id, instance_os in instances:
+        if not is_ssm_agent_installed(instance_id):
+            try:
+                logger.info(f"Processing instance {instance_id} ({instance_os})")
+                
+                # Backup the existing user data script
+                original_user_data = retry(lambda: backup_user_data(instance_id))
+                
+                # Replace the existing user data script with SSM Agent installation script
+                if instance_os == 'windows':
+                    ssm_agent_script = WINDOWS_SSM_AGENT_SCRIPT
+                else:
+                    ssm_agent_script = LINUX_SSM_AGENT_SCRIPT
+                
+                retry(lambda: update_user_data(instance_id, ssm_agent_script))
+                
+                # Restart the instance to install SSM Agent
+                restart_instance(instance_id)
+                
+                # Wait for the instance to stop
+                wait_for_instance_state(instance_id, 'stopped')
+                
+                # Restore the original user data script
+                retry(lambda: update_user_data(instance_id, original_user_data))
+                
+                # Restart the instance with the original script
+                restart_instance(instance_id)
+                
+                logger.info(f"Successfully processed instance {instance_id}")
+            except Exception as e:
+                logger.error(f"Failed to process instance {instance_id}: {e}")
+
+def get_all_instances():
+    instances = []
+    next_token = None
+    try:
+        while True:
+            if next_token:
+                response = ec2_client.describe_instances(NextToken=next_token)
+            else:
+                response = ec2_client.describe_instances()
+            
+            for reservation in response['Reservations']:
+                for instance in reservation['Instances']:
+                    instance_id = instance['InstanceId']
+                    instance_os = 'windows' if 'Platform' in instance and instance['Platform'] == 'windows' else 'linux'
+                    instances.append((instance_id, instance_os))
+            
+            next_token = response.get('NextToken')
+            if not next_token:
+                break
+    except ClientError as e:
+        logger.error(f"Error retrieving instances: {e}")
+    return instances
+
+def is_ssm_agent_installed(instance_id):
+    try:
+        response = ssm_client.describe_instance_information(
+            Filters=[
+                {
+                    'Key': 'InstanceIds',
+                    'Values': [instance_id]
+                }
+            ]
+        )
+        return len(response['InstanceInformationList']) > 0
+    except ClientError as e:
+        logger.error(f"Error checking SSM Agent installation on {instance_id}: {e}")
+        return False
+
+def backup_user_data(instance_id):
+    try:
+        response = ec2_client.describe_instance_attribute(
+            InstanceId=instance_id,
+            Attribute='userData'
+        )
+        return response['UserData']['Value'] if 'UserData' in response else ''
+    except ClientError as e:
+        logger.error(f"Error backing up user data for {instance_id}: {e}")
+        raise
+
+def update_user_data(instance_id, user_data):
+    try:
+        ec2_client.modify_instance_attribute(
+            InstanceId=instance_id,
+            UserData={'Value': user_data}
+        )
+    except ClientError as e:
+        logger.error(f"Error updating user data for {instance_id}: {e}")
+        raise
+
+def restart_instance(instance_id):
+    try:
+        ec2_client.stop_instances(InstanceIds=[instance_id])
+        wait_for_instance_state(instance_id, 'stopped')
+        ec2_client.start_instances(InstanceIds=[instance_id])
+        wait_for_instance_state(instance_id, 'running')
+    except ClientError as e:
+        logger.error(f"Error restarting instance {instance_id}: {e}")
+        raise
+
+def wait_for_instance_state(instance_id, state):
+    try:
+        waiter = ec2_client.get_waiter(f'instance_{state}')
+        waiter.wait(InstanceIds=[instance_id])
+    except ClientError as e:
+        logger.error(f"Error waiting for instance {instance_id} to reach state {state}: {e}")
+        raise
+
+def retry(func, retries=MAX_RETRIES, delay=RETRY_DELAY):
+    for attempt in range(retries):
+        try:
+            return func()
+        except Exception as e:
+            if attempt < retries - 1:
+                logger.warning(f"Retrying due to error: {e}")
+                time.sleep(delay)
+            else:
+                logger.error(f"Max retries reached. Error: {e}")
+                raise
+
+
+
+
+
+######################################################################################################
+
+
+import boto3
+import logging
+import json
+import os
+from botocore.exceptions import NoCredentialsError, PartialCredentialsError, ClientError
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# AWS clients
+ssm_client = boto3.client('ssm')
+cloudformation_client = boto3.client('cloudformation')
+fsx_client = boto3.client('fsx')
+
+# Constants
+PARAMETER_NAME = '/ontap/volumes'
+STACK_NAME = os.environ['STACK_NAME']
+INCREASE_PERCENTAGE_THRESHOLD_1 = 0.05  # 5%
+INCREASE_PERCENTAGE_THRESHOLD_2 = 0.10  # 10%
+INCREASE_SIZE_LIMIT = 2048 * 1024**3  # 2TB in bytes
+
+def get_existing_volume_details():
+    """Fetches existing volume details from AWS Systems Manager Parameter Store."""
+    try:
+        response = ssm_client.get_parameter(Name=PARAMETER_NAME)
+        return json.loads(response['Parameter']['Value'])
+    except ssm_client.exceptions.ParameterNotFound:
+        logging.warning("Parameter not found in Parameter Store: %s", PARAMETER_NAME)
+        return {}
+    except ClientError as e:
+        logging.error("Failed to get parameter from Parameter Store: %s", e)
+        raise
+    except Exception as e:
+        logging.error("An unexpected error occurred: %s", e)
+        raise
+
+def store_volume_details(volume_details):
+    """Stores volume details in AWS Systems Manager Parameter Store."""
+    try:
+        parameter_value = json.dumps(volume_details)
+        ssm_client.put_parameter(
+            Name=PARAMETER_NAME,
+            Value=parameter_value,
+            Type='String',
+            Overwrite=True
+        )
+        logging.info("Stored volume details in Parameter Store: %s", PARAMETER_NAME)
+    except ClientError as e:
+        logging.error("Failed to store volume details in Parameter Store: %s", e)
+        raise
+    except Exception as e:
+        logging.error("An unexpected error occurred: %s", e)
+        raise
+
+def calculate_new_size(total_capacity, used_capacity):
+    """Calculates the new size of the volume based on usage."""
+    try:
+        if used_capacity / total_capacity >= 0.95:
+            increase_by = 0
+            size_5_percent = INCREASE_PERCENTAGE_THRESHOLD_1 * total_capacity
+            size_10_percent = INCREASE_PERCENTAGE_THRESHOLD_2 * total_capacity
+
+            if size_5_percent > INCREASE_SIZE_LIMIT:
+                increase_by = size_5_percent
+            elif size_10_percent < INCREASE_SIZE_LIMIT:
+                increase_by = size_10_percent
+
+            if increase_by > 0:
+                return total_capacity + increase_by
+        return None
+    except ZeroDivisionError as e:
+        logging.error("Division by zero error: %s", e)
+        raise
+    except Exception as e:
+        logging.error("An unexpected error occurred: %s", e)
+        raise
+
+def update_volume_size(volume_id, new_size):
+    """Updates the size of the FSx volume."""
+    try:
+        fsx_client.update_file_system(
+            FileSystemId=volume_id,
+            StorageCapacity=int(new_size / 1024**3)  # Convert bytes to GB
+        )
+        logging.info(f"Updated volume {volume_id} to new size {new_size} bytes")
+        return True
+    except ClientError as e:
+        logging.error(f"Failed to update volume size for {volume_id}: {e}")
+        return False
+    except Exception as e:
+        logging.error("An unexpected error occurred: %s", e)
+        raise
+
+def create_change_set(volume_id, new_size):
+    """Creates a CloudFormation change set to update the volume size."""
+    try:
+        response = cloudformation_client.get_template(StackName=STACK_NAME)
+        template_body = response['TemplateBody']
+        change_set_name = f"update-volume-size-{volume_id}"
+
+        change_set = cloudformation_client.create_change_set(
+            StackName=STACK_NAME,
+            TemplateBody=template_body,
+            ChangeSetName=change_set_name,
+            ChangeSetType='UPDATE',
+            Parameters=[
+                {
+                    'ParameterKey': 'VolumeId',
+                    'ParameterValue': volume_id,
+                    'UsePreviousValue': False
+                },
+                {
+                    'ParameterKey': 'VolumeSize',
+                    'ParameterValue': str(int(new_size / 1024**3)),  # Convert bytes to GB
+                    'UsePreviousValue': False
+                },
+            ],
+            Capabilities=['CAPABILITY_NAMED_IAM'],
+        )
+
+        logging.info(f"Created change set {change_set_name} for stack {STACK_NAME}")
+        return change_set['Id']
+    except ClientError as e:
+        logging.error(f"Failed to create change set for stack {STACK_NAME}: {e}")
+        raise
+    except Exception as e:
+        logging.error("An unexpected error occurred: %s", e)
+        raise
+
+def execute_change_set(change_set_id):
+    """Executes a CloudFormation change set."""
+    try:
+        cloudformation_client.execute_change_set(ChangeSetName=change_set_id)
+        logging.info(f"Executed change set {change_set_id}")
+    except ClientError as e:
+        logging.error(f"Failed to execute change set {change_set_id}: {e}")
+        raise
+    except Exception as e:
+        logging.error("An unexpected error occurred: %s", e)
+        raise
+
+def lambda_handler(event, context):
+    try:
+        existing_details = get_existing_volume_details()
+        updated_volumes = {}
+
+        for volume_id, details in existing_details.items():
+            total_capacity = details['total_capacity']
+            used_capacity = details['used_capacity']
+
+            new_size = calculate_new_size(total_capacity, used_capacity)
+            if new_size:
+                if update_volume_size(volume_id, new_size):
+                    updated_volumes[volume_id] = {
+                        'volume_name': volume_id,
+                        'volume_id': volume_id,
+                        'new_size': int(new_size),
+                        'used_capacity': used_capacity,
+                        'total_capacity': int(new_size)
+                    }
+                    change_set_id = create_change_set(volume_id, new_size)
+                    execute_change_set(change_set_id)
+
+        if updated_volumes:
+            store_volume_details(updated_volumes)
+    except Exception as e:
+        logging.error("Failed to process volumes: %s", e)
+        raise
+
+# Example usage
+if __name__ == "__main__":
+    test_event = {}
+    lambda_handler(test_event, None)
