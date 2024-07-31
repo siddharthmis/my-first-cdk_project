@@ -1,0 +1,176 @@
+import json
+import boto3
+import logging
+import os
+import subprocess
+from botocore.exceptions import ClientError
+from datetime import datetime
+from time import sleep
+
+# Set up logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Environment variables
+TABLE_NAME = os.getenv('DYNAMODB_TABLE_NAME')
+JIRA_BASE_URL = os.getenv('JIRA_BASE_URL')
+JIRA_USER_EMAIL = os.getenv('JIRA_USER_EMAIL')
+JIRA_API_TOKEN = os.getenv('JIRA_API_TOKEN')
+JIRA_PROJECT_KEY = os.getenv('JIRA_PROJECT_KEY')
+JIRA_ISSUE_TYPE = os.getenv('JIRA_ISSUE_TYPE')
+EXCLUSION_TAG_KEY = os.getenv('EXCLUSION_TAG_KEY', 'ExcludeFromAutomation')
+EXCLUSION_TAG_VALUE = os.getenv('EXCLUSION_TAG_VALUE', 'true')
+
+dynamodb = boto3.resource('dynamodb')
+cloudwatch = boto3.client('cloudwatch')
+table = dynamodb.Table(TABLE_NAME)
+
+def lambda_handler(event, context):
+    account_id = event['account']
+    cloudwatch_alarm = event['detail']['alarmName']
+    alarm_state = event['detail']['state']['value']
+    alarm_description = event['detail'].get('alarmDescription', 'No description provided')
+    region = event['region']
+    link = f'https://console.aws.amazon.com/cloudwatch/home?region={region}#alarmsV2:alarm/{cloudwatch_alarm}'
+    current_date = datetime.utcnow().date().isoformat()
+
+    # Check if the alarm has the exclusion tag
+    if is_alarm_excluded(cloudwatch_alarm):
+        logger.info(f"Alarm {cloudwatch_alarm} is excluded from automation.")
+        return {'statusCode': 200, 'body': json.dumps('Alarm is excluded from automation')}
+
+    try:
+        response = get_item_with_retries({'AccountId': account_id, 'AlarmName': cloudwatch_alarm})
+    except ClientError as e:
+        logger.error(f"Error getting item from DynamoDB: {e.response['Error']['Message']}")
+        return {'statusCode': 500, 'body': json.dumps('Error getting item from DynamoDB')}
+    
+    if 'Item' in response:
+        jira_ticket_id = response['Item']['JiraTicketId']
+        last_updated = response['Item'].get('LastUpdated')
+        if last_updated:
+            last_updated_date = datetime.fromisoformat(last_updated).date().isoformat()
+        else:
+            last_updated_date = None
+
+        if last_updated_date == current_date:
+            # Add comment to existing ticket
+            if alarm_state == 'ALARM':
+                add_comment_to_jira_ticket(jira_ticket_id, f'Alarm is still in ALARM state at {datetime.utcnow().isoformat()}.')
+            elif alarm_state == 'OK':
+                add_comment_to_jira_ticket(jira_ticket_id, f'Alarm returned to OK state at {datetime.utcnow().isoformat()}.')
+        else:
+            # Create new ticket for a new day
+            if alarm_state == 'ALARM':
+                jira_ticket_id = create_jira_ticket(account_id, cloudwatch_alarm, alarm_description, link, alarm_state)
+                if jira_ticket_id:
+                    try:
+                        put_item_with_retries({
+                            'AccountId': account_id,
+                            'AlarmName': cloudwatch_alarm,
+                            'JiraTicketId': jira_ticket_id,
+                            'LastUpdated': current_date
+                        })
+                    except ClientError as e:
+                        logger.error(f"Error putting item to DynamoDB: {e.response['Error']['Message']}")
+    else:
+        if alarm_state == 'ALARM':
+            jira_ticket_id = create_jira_ticket(account_id, cloudwatch_alarm, alarm_description, link, alarm_state)
+            if jira_ticket_id:
+                try:
+                    put_item_with_retries({
+                        'AccountId': account_id,
+                        'AlarmName': cloudwatch_alarm,
+                        'JiraTicketId': jira_ticket_id,
+                        'LastUpdated': current_date
+                    })
+                except ClientError as e:
+                    logger.error(f"Error putting item to DynamoDB: {e.response['Error']['Message']}")
+
+    return {'statusCode': 200, 'body': json.dumps('Lambda executed successfully')}
+
+def is_alarm_excluded(alarm_name):
+    """Check if the alarm has the exclusion tag."""
+    try:
+        response = cloudwatch.list_tags_for_resource(
+            ResourceARN=f'arn:aws:cloudwatch:{os.getenv("AWS_REGION")}:{os.getenv("AWS_ACCOUNT_ID")}:alarm:{alarm_name}'
+        )
+        tags = response.get('Tags', [])
+        for tag in tags:
+            if tag['Key'] == EXCLUSION_TAG_KEY and tag['Value'] == EXCLUSION_TAG_VALUE:
+                return True
+    except ClientError as e:
+        logger.error(f"Error fetching tags for alarm {alarm_name}: {e.response['Error']['Message']}")
+        return False
+    return False
+
+def get_item_with_retries(key, retries=3, backoff=2):
+    for attempt in range(retries):
+        try:
+            response = table.get_item(Key=key)
+            return response
+        except ClientError as e:
+            if attempt < retries - 1:
+                sleep(backoff ** attempt)
+            else:
+                raise e
+
+def put_item_with_retries(item, retries=3, backoff=2):
+    for attempt in range(retries):
+        try:
+            table.put_item(Item=item)
+            return
+        except ClientError as e:
+            if attempt < retries - 1:
+                sleep(backoff ** attempt)
+            else:
+                raise e
+
+def create_jira_ticket(account_id, alarm_name, alarm_description, link, alarm_state):
+    description = (
+        f"*Alarm Name*: {alarm_name}\n"
+        f"*Account ID*: {account_id}\n"
+        f"*State*: {alarm_state}\n"
+        f"*Description*: {alarm_description}\n"
+        f"*Link*: [View Alarm in CloudWatch]({link})"
+    )
+    issue_dict = {
+        'project': {'key': JIRA_PROJECT_KEY},
+        'summary': f'CloudWatch Alarm: {alarm_name}',
+        'description': description,
+        'issuetype': {'name': JIRA_ISSUE_TYPE},
+    }
+    issue = jira.create_issue(fields=issue_dict)
+    return issue.key
+
+def add_comment_to_jira_ticket(ticket_id, comment):
+    url = f'{JIRA_BASE_URL}/rest/api/2/issue/{ticket_id}/comment'
+    auth = f'{JIRA_USER_EMAIL}:{JIRA_API_TOKEN}'
+    data = {
+        "body": comment
+    }
+    headers = {
+        'Content-Type': 'application/json'
+    }
+    
+    for attempt in range(3):  # Retry up to 3 times
+        try:
+            result = subprocess.run(
+                ['curl', '-u', auth, '-X', 'POST', '-H', 'Content-Type: application/json', '-d', json.dumps(data), url],
+                capture_output=True, text=True
+            )
+            if result.returncode != 0:
+                logger.error(f"Error adding comment to Jira ticket: {result.stderr}")
+                raise Exception(f"Curl returned non-zero exit code: {result.stderr}")
+            logger.info(f"Successfully added comment to Jira ticket {ticket_id}")
+            break  # Exit loop if successful
+        except Exception as e:
+            logger.error(f"Failed to add comment to Jira ticket: {e}")
+            if attempt < 2:  # Retry if not the last attempt
+                sleep(2 ** attempt)
+            else:
+                raise
+
+def resolve_jira_ticket(ticket_id):
+    transition_id = '3'  # Replace with the correct transition ID for your Jira setup
+    jira.transition_issue(ticket_id, transition=transition_id)
