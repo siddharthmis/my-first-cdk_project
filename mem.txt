@@ -45,3 +45,81 @@
     }
   ]
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+{
+  "schemaVersion": "2.2",
+  "description": "Run a memory stress test on Linux EC2 instances using stress-ng",
+  "parameters": {
+    "Duration": {
+      "type": "String",
+      "description": "Duration for which to run the stress test (e.g., 60s, 5m, 1h)",
+      "default": "60s"
+    },
+    "Workers": {
+      "type": "String",
+      "description": "Number of workers to use for the stress test",
+      "default": "2"
+    },
+    "Percent": {
+      "type": "String",
+      "description": "Percentage of memory to stress",
+      "default": "80"
+    }
+  },
+  "mainSteps": [
+    {
+      "action": "aws:runShellScript",
+      "name": "runMemoryStressTest",
+      "inputs": {
+        "runCommand": [
+          "echo 'Updating package list...'",
+          "sudo apt-get update -y",
+          "echo 'Installing stress-ng tool...'",
+          "sudo apt-get install -y stress-ng",
+          "echo 'Calculating available memory...'",
+          "AVAILABLE_MEM=$(awk '/MemAvailable/ {print $2}' /proc/meminfo)",
+          "echo 'Available memory: $AVAILABLE_MEM KB'",
+          "STRESS_MEM=$(($AVAILABLE_MEM * {{ Percent }} / 100))",
+          "echo 'Memory to stress: $STRESS_MEM KB'",
+          "echo 'Running stress-ng with {{ Workers }} workers for {{ Duration }} duration...'",
+          "sudo stress-ng --vm 1 --vm-bytes ${STRESS_MEM}K --vm-keep -m {{ Workers }} --timeout {{ Duration }}",
+          "echo 'Stress test completed.'"
+        ]
+      }
+    }
+  ]
+}
