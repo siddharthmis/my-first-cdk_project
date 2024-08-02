@@ -387,3 +387,103 @@ Copy code
 cdk synth
 cdk deploy
 This updated setup uses volume names as keys in a single JSON parameter to store all volume sizes and fetches the size for each volume based on the passed volume name during creation. If you need any further customization or help, please let me know!
+
+
+
+#########################################################
+###################################################3#####
+
+
+I apologize for the inconvenience. Let's refine the code to properly handle the JSON decoding and ensure that the parameter fetching works correctly. We should also include error handling to make it more robust.
+
+Here's the updated code:
+
+Step 1: Store Volume Sizes in Parameter Store
+Ensure you store the volume sizes correctly in Parameter Store. For example:
+
+sh
+Copy code
+aws ssm put-parameter --name "/fsx/volumes/sizes" --value '{"volume1": 1024, "volume2": 2048, "volume3": 4096}' --type "String"
+Step 2: Update CDK Stack
+Import necessary modules
+python
+Copy code
+import json
+from aws_cdk import (
+    core,
+    aws_fsx as fsx,
+    aws_ssm as ssm,
+)
+Create a function to fetch and parse the JSON parameter from Parameter Store
+python
+Copy code
+def get_volume_sizes(scope: core.Construct, parameter_name: str) -> dict:
+    parameter_value = ssm.StringParameter.from_string_parameter_name(
+        scope, "VolumeSizesParam", parameter_name
+    ).string_value
+    try:
+        return json.loads(parameter_value)
+    except json.JSONDecodeError:
+        raise ValueError(f"Unable to decode JSON from parameter: {parameter_name}")
+Update your stack to use the parsed JSON values
+Assuming you have a stack class OntapFsxStack, here’s how you can update it:
+
+python
+Copy code
+class OntapFsxStack(core.Stack):
+
+    def __init__(self, scope: core.Construct, id: str, **kwargs) -> None:
+        super().__init__(scope, id, **kwargs)
+
+        # Parameter name
+        parameter_name = "/fsx/volumes/sizes"
+
+        # Get volume sizes from Parameter Store
+        volumes_sizes = get_volume_sizes(self, parameter_name)
+
+        # Volume names
+        volume_names = volumes_sizes.keys()
+
+        # Create the FSx ONTAP file system
+        file_system = fsx.CfnFileSystem(
+            self, "OntapFileSystem",
+            file_system_type="ONTAP",
+            subnet_ids=["subnet-12345678"],  # Replace with your subnet ID
+            storage_capacity=1024,  # Total storage capacity
+            ontap_configuration=fsx.CfnFileSystem.OntapConfigurationProperty(
+                deployment_type="MULTI_AZ_1",
+                automatic_backup_retention_days=7,
+                throughput_capacity=128,  # Throughput capacity in MBps
+                weekly_maintenance_start_time="1:00:00",
+                preferred_subnet_id="subnet-12345678",  # Replace with your subnet ID
+                route_table_ids=["rtb-12345678"],  # Replace with your route table ID
+            )
+        )
+
+        # Create volumes using the sizes from Parameter Store
+        for volume_name in volume_names:
+            volume_size = volumes_sizes.get(volume_name)
+            fsx.CfnVolume(
+                self, f"{volume_name.capitalize()}Volume",
+                volume_type="ONTAP",
+                name=volume_name,
+                ontap_configuration=fsx.CfnVolume.OntapConfigurationProperty(
+                    storage_virtual_machine_id=file_system.attr_storage_virtual_machine_ids[0],
+                    junction_path=f"/{volume_name}",
+                    security_style="UNIX",
+                    size_in_megabytes=str(volume_size)
+                )
+            )
+Explanation
+Importing Modules: Necessary AWS CDK modules are imported.
+Fetching and Parsing Parameter: get_volume_sizes function fetches and parses the JSON parameter from Parameter Store. It includes error handling to raise an exception if the JSON cannot be decoded.
+FSx Creation: The OntapFsxStack class creates the FSx ONTAP file system.
+Volume Creation: The stack iterates through the volume names obtained from the parsed JSON, fetches the size for each volume from Parameter Store, and creates each volume with the specified size using the volume names.
+Deployment
+Deploy your stack with the following commands:
+
+sh
+Copy code
+cdk synth
+cdk deploy
+This setup ensures the JSON parameter is correctly fetched and parsed, and handles any potential JSON decoding errors. If you encounter any further issues or need additional customization, please let me know!
