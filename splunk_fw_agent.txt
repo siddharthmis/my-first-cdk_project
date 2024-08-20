@@ -1,0 +1,103 @@
+{
+  "schemaVersion": "0.3",
+  "description": "Check Splunk Universal Forwarder status and update if not on the desired version.",
+  "assumeRole": "{{ AutomationAssumeRole }}",
+  "parameters": {
+    "DesiredSplunkVersion": {
+      "type": "String",
+      "description": "Desired Splunk Universal Forwarder version."
+    },
+    "SplunkInstallerPath": {
+      "type": "String",
+      "description": "Path to the Splunk installer executable."
+    }
+  },
+  "mainSteps": [
+    {
+      "name": "CheckSplunkVersion",
+      "action": "aws:runCommand",
+      "inputs": {
+        "DocumentName": "AWS-RunPowerShellScript",
+        "Parameters": {
+          "commands": [
+            "$splunkPath = 'C:\\Program Files\\SplunkUniversalForwarder\\bin\\splunk.exe'",
+            "if (Test-Path $splunkPath) {",
+            "    $currentVersion = (& $splunkPath version).Trim()",
+            "    Write-Output \"CurrentSplunkVersion=$currentVersion\"",
+            "} else {",
+            "    Write-Output 'Splunk Universal Forwarder is not installed.'",
+            "    exit 1",
+            "}"
+          ]
+        }
+      },
+      "outputs": [
+        {
+          "Name": "CurrentSplunkVersion",
+          "Selector": "$.StandardOutputContent",
+          "Type": "StringMap"
+        }
+      ]
+    },
+    {
+      "name": "CheckSplunkServiceStatus",
+      "action": "aws:runCommand",
+      "inputs": {
+        "DocumentName": "AWS-RunPowerShellScript",
+        "Parameters": {
+          "commands": [
+            "$splunkService = Get-Service -Name 'SplunkForwarder' -ErrorAction Stop",
+            "if ($splunkService.Status -eq 'Running') {",
+            "    Write-Output 'Splunk service is running.'",
+            "} else {",
+            "    Write-Output 'Splunk service is not running.'",
+            "    exit 1",
+            "}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "CompareVersions",
+      "action": "aws:runCommand",
+      "inputs": {
+        "DocumentName": "AWS-RunPowerShellScript",
+        "Parameters": {
+          "commands": [
+            "$desiredVersion = '{{ DesiredSplunkVersion }}'",
+            "$currentVersionOutput = '{{ CheckSplunkVersion.CurrentSplunkVersion }}'",
+            "$currentVersion = $currentVersionOutput.Split('=')[1]",
+            "if ($currentVersion -ne $desiredVersion) {",
+            "    Write-Output 'Version mismatch. Updating Splunk Universal Forwarder.'",
+            "    exit 0",
+            "} else {",
+            "    Write-Output 'Splunk Universal Forwarder is up-to-date.'",
+            "    exit 1",
+            "}"
+          ]
+        }
+      },
+      "onFailure": "Continue"
+    },
+    {
+      "name": "UpdateSplunkForwarder",
+      "action": "aws:runCommand",
+      "onFailure": "Abort",
+      "isCritical": true,
+      "inputs": {
+        "DocumentName": "AWS-RunPowerShellScript",
+        "Parameters": {
+          "commands": [
+            "$installerPath = '{{ SplunkInstallerPath }}'",
+            "if (Test-Path $installerPath) {",
+            "    Start-Process $installerPath -ArgumentList '/quiet /norestart' -Wait",
+            "    Write-Output 'Splunk Universal Forwarder updated successfully.'",
+            "} else {",
+            "    throw 'Splunk installer not found at the specified path.'",
+            "}"
+          ]
+        }
+      }
+    }
+  ]
+}
