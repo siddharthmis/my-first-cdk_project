@@ -1,0 +1,134 @@
+o address this requirement, I’ll enhance the solution to include a default concurrency limit if it is not defined for a specific job in the JSON configuration.
+
+Project Structure
+Copy code
+lambda_function.py
+glue_job_config.json
+glue_job_config.json (Configuration File)
+json
+Copy code
+{
+  "concurrency_limits": {
+    "job_1": 3,
+    "job_2": 5
+  },
+  "excluded_jobs": ["job_4", "job_5"]
+}
+Updated lambda_function.py (Lambda Code)
+python
+Copy code
+import boto3
+import json
+from botocore.exceptions import ClientError
+
+# Initialize Glue client
+glue_client = boto3.client('glue')
+
+# Default concurrency limit if not specified per job
+DEFAULT_CONCURRENCY_LIMIT = 3
+
+# Load JSON configuration
+def load_job_config():
+    """Load the job configuration from a local JSON file."""
+    try:
+        with open('glue_job_config.json', 'r') as config_file:
+            return json.load(config_file)
+    except FileNotFoundError as e:
+        print(f"Error: Configuration file not found - {str(e)}")
+        return {
+            "concurrency_limits": {},
+            "excluded_jobs": []
+        }
+    except json.JSONDecodeError as e:
+        print(f"Error: Invalid JSON format in configuration file - {str(e)}")
+        return {
+            "concurrency_limits": {},
+            "excluded_jobs": []
+        }
+
+job_config = load_job_config()
+
+def lambda_handler(event, context):
+    try:
+        # Get the list of all Glue jobs
+        all_jobs = get_all_glue_jobs()
+        
+        for job_name in all_jobs:
+            # Skip excluded jobs
+            if job_name in job_config.get("excluded_jobs", []):
+                continue
+            
+            # Get the concurrency limit for the current job, use the default if not defined
+            concurrency_limit = job_config.get("concurrency_limits", {}).get(job_name, DEFAULT_CONCURRENCY_LIMIT)
+            
+            # Get the list of running Glue jobs for the current job
+            running_jobs = get_running_jobs(job_name)
+            
+            # Check if the current number of running jobs exceeds the limit
+            if len(running_jobs) < concurrency_limit:
+                start_glue_job(job_name)
+            else:
+                print(f"Job '{job_name}' concurrency limit reached. Skipping start.")
+        
+        return response_message(200, "Glue jobs managed successfully.")
+
+    except Exception as e:
+        return response_message(500, f"Unexpected error occurred: {str(e)}")
+
+
+def get_all_glue_jobs():
+    """Retrieve the list of all Glue jobs."""
+    try:
+        response = glue_client.get_jobs()
+        job_names = [job['Name'] for job in response['Jobs']]
+        return job_names
+    except ClientError as e:
+        print(f"Error fetching Glue jobs: {str(e)}")
+        return []
+
+
+def get_running_jobs(job_name):
+    """Retrieve the list of running instances for a specific Glue job."""
+    running_jobs = []
+    paginator = glue_client.get_paginator('get_job_runs')
+    
+    try:
+        response_iterator = paginator.paginate(JobName=job_name)
+        for response in response_iterator:
+            for job in response['JobRuns']:
+                if job['JobRunState'] in ['RUNNING', 'STARTING']:
+                    running_jobs.append(job)
+    except ClientError as e:
+        print(f"Error fetching running jobs for '{job_name}': {str(e)}")
+    
+    return running_jobs
+
+
+def start_glue_job(job_name):
+    """Start a Glue job and log the job run ID if successful."""
+    try:
+        response = glue_client.start_job_run(JobName=job_name)
+        print(f"Started Glue job '{job_name}' with run ID: {response['JobRunId']}")
+        return response
+    except ClientError as e:
+        print(f"Error starting Glue job '{job_name}': {str(e)}")
+        return None
+
+
+def response_message(status_code, message):
+    """Create a user-friendly response message."""
+    return {
+        'statusCode': status_code,
+        'message': message
+    }
+Key Enhancements:
+Default Concurrency Limit: The DEFAULT_CONCURRENCY_LIMIT is used whenever a job does not have a specific limit defined in the JSON configuration.
+Flexibility: You can still define job-specific limits in the JSON file while having a fallback for other jobs.
+How to Deploy:
+Upload Both Files:
+
+Ensure both lambda_function.py and glue_job_config.json are included in the Lambda deployment package (e.g., a zip file).
+Testing and Configuration Updates:
+
+Update the glue_job_config.json file as needed to adjust concurrency limits and excluded jobs without modifying the Lambda code.
+This solution is now more resilient and flexible, allowing you to manage Glue job concurrency dynamically with a configurable fallback option.
