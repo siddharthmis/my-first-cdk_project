@@ -132,3 +132,103 @@ Testing and Configuration Updates:
 
 Update the glue_job_config.json file as needed to adjust concurrency limits and excluded jobs without modifying the Lambda code.
 This solution is now more resilient and flexible, allowing you to manage Glue job concurrency dynamically with a configurable fallback option.
+
+
+#############################################3
+
+
+
+import boto3
+import json
+import logging
+from botocore.exceptions import ClientError, BotoCoreError
+
+# Set up logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Initialize Glue client
+glue_client = boto3.client('glue')
+
+# Default concurrency limit if not specified per job
+DEFAULT_CONCURRENCY_LIMIT = 2
+
+# Load JSON configuration
+def load_job_config():
+    """Load the job configuration from a local JSON file."""
+    try:
+        with open('glue_job_config.json', 'r') as config_file:
+            return json.load(config_file)
+    except FileNotFoundError as e:
+        logger.error(f"Configuration file not found - {str(e)}")
+        return {
+            "concurrency_limits": {},
+            "excluded_jobs": []
+        }
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON format in configuration file - {str(e)}")
+        return {
+            "concurrency_limits": {},
+            "excluded_jobs": []
+        }
+
+job_config = load_job_config()
+
+def lambda_handler(event, context):
+    try:
+        # Get the list of all Glue jobs
+        all_jobs = get_all_glue_jobs()
+        
+        for job_name in all_jobs:
+            # Skip excluded jobs
+            if job_name in job_config.get("excluded_jobs", []):
+                logger.info(f"Job '{job_name}' is excluded from concurrency management. Skipping...")
+                continue
+            
+            # Get the concurrency limit for the current job, use the default if not defined
+            concurrency_limit = job_config.get("concurrency_limits", {}).get(job_name, DEFAULT_CONCURRENCY_LIMIT)
+            
+            # Update the Glue job with the concurrency limit
+            update_glue_job_concurrency(job_name, concurrency_limit)
+        
+        return response_message(200, "Glue jobs concurrency settings updated successfully.")
+
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        return response_message(500, f"An unexpected error occurred: {str(e)}")
+
+
+def get_all_glue_jobs():
+    """Retrieve the list of all Glue jobs."""
+    try:
+        response = glue_client.get_jobs()
+        job_names = [job['Name'] for job in response['Jobs']]
+        return job_names
+    except (ClientError, BotoCoreError) as e:
+        logger.error(f"Error fetching Glue jobs: {str(e)}")
+        raise  # Re-raise to trigger fallback/error response
+
+
+def update_glue_job_concurrency(job_name, concurrency_limit):
+    """Update the Glue job with the specified concurrency limit."""
+    try:
+        # Perform the update only on the MaxConcurrentRuns parameter
+        glue_client.update_job(
+            JobName=job_name,
+            JobUpdate={
+                'MaxConcurrentRuns': concurrency_limit
+            }
+        )
+        logger.info(f"Set concurrency limit for job '{job_name}' to {concurrency_limit}.")
+    
+    except (ClientError, BotoCoreError) as e:
+        logger.error(f"Error updating Glue job '{job_name}': {str(e)}")
+        # Graceful handling of specific job update failure without breaking the entire process
+
+
+def response_message(status_code, message):
+    """Create a user-friendly response message."""
+    return {
+        'statusCode': status_code,
+        'message': message
+    }
