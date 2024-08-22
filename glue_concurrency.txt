@@ -232,3 +232,23 @@ def response_message(status_code, message):
         'statusCode': status_code,
         'message': message
     }
+
+
+
+
+
+
+
+
+
+def get_all_glue_jobs():
+    """Retrieve the list of all Glue jobs using a paginator."""
+    job_names = []
+    try:
+        paginator = glue_client.get_paginator('get_jobs')
+        for page in paginator.paginate():
+            job_names.extend([job['Name'] for job in page['Jobs']])
+        return job_names
+    except (ClientError, BotoCoreError) as e:
+        logger.error(f"Error fetching Glue jobs: {str(e)}")
+        raise  # Re-raise to trigger fallback/error response
