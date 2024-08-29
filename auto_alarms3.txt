@@ -1,0 +1,921 @@
+ok, never mind, please provide all code again.
+ChatGPT said:
+ChatGPT
+Certainly! Below is the code for all the components that you'll need to create your Lambda function along with the necessary service module files and the default_metrics.json file.
+
+lambda_function.py
+This is the main Lambda function that orchestrates the collection of metrics across various AWS services.
+
+python
+Copy code
+import boto3
+import json
+from datetime import datetime
+from service_modules import alb_metrics, aurora_metrics, backup_metrics, outposts_metrics, ec2_metrics, elasticache_metrics, opensearch_metrics, macie_metrics
+
+dynamodb = boto3.client('dynamodb')
+
+def load_default_metrics():
+    with open('default_metrics.json') as f:
+        default_metrics = json.load(f)
+    return default_metrics
+
+def put_metric_to_dynamodb(resource_id, resource_type, metric_name, metric_value, timestamp, threshold):
+    dynamodb.put_item(
+        TableName='ResourceMetrics',
+        Item={
+            'ResourceID': {'S': resource_id},
+            'ResourceType': {'S': resource_type},
+            'MetricName': {'S': metric_name},
+            'MetricValue': {'N': str(metric_value)},
+            'Threshold': {'N': str(threshold)},
+            'Timestamp': {'S': timestamp}
+        }
+    )
+
+def lambda_handler(event, context):
+    current_time = datetime.utcnow()
+    timestamp = current_time.isoformat()
+
+    # Load default metrics
+    default_metrics = load_default_metrics()
+
+    # Collect metrics for each service
+    alb_metrics.collect_metrics(timestamp, put_metric_to_dynamodb, default_metrics['ALB'])
+    aurora_metrics.collect_metrics(timestamp, put_metric_to_dynamodb, default_metrics['Aurora'])
+    backup_metrics.collect_metrics(timestamp, put_metric_to_dynamodb, default_metrics['Backup'])
+    outposts_metrics.collect_metrics(timestamp, put_metric_to_dynamodb, default_metrics['Outposts'])
+    ec2_metrics.collect_metrics(timestamp, put_metric_to_dynamodb, default_metrics['EC2'])
+    elasticache_metrics.collect_metrics(timestamp, put_metric_to_dynamodb, default_metrics['ElastiCache'])
+    opensearch_metrics.collect_metrics(timestamp, put_metric_to_dynamodb, default_metrics['OpenSearch'])
+    macie_metrics.collect_metrics(timestamp, put_metric_to_dynamodb, default_metrics['Macie'])
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps('Metrics gathered successfully')
+    }
+Service Module Files
+Each service has its own module file responsible for collecting metrics.
+
+alb_metrics.py
+python
+Copy code
+import boto3
+from datetime import datetime, timedelta
+import logging
+
+# Initialize AWS clients and logger
+cloudwatch = boto3.client('cloudwatch')
+alb = boto3.client('elbv2')
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def collect_metrics(timestamp, put_metric_to_dynamodb, service_metrics):
+    current_time = datetime.utcnow()
+
+    try:
+        alb_instances = alb.describe_load_balancers()
+    except Exception as e:
+        logger.error(f"Error describing ALB instances: {e}")
+        return
+
+    for alb_instance in alb_instances['LoadBalancers']:
+        alb_arn = alb_instance['LoadBalancerArn']
+        for metric_name, metric_info in service_metrics.items():
+            try:
+                metrics = cloudwatch.get_metric_statistics(
+                    Namespace=metric_info['Namespace'],
+                    MetricName=metric_name,
+                    Dimensions=[{'Name': 'LoadBalancer', 'Value': alb_arn}],
+                    StartTime=current_time - timedelta(minutes=5),
+                    EndTime=current_time,
+                    Period=300,
+                    Statistics=[metric_info['Statistic']]
+                )
+                for metric in metrics['Datapoints']:
+                    metric_value = metric[metric_info['Statistic']]
+                    put_metric_to_dynamodb(alb_arn, 'ALB', metric_name, metric_value, timestamp, metric_info['Threshold'])
+            except Exception as e:
+                logger.error(f"Error collecting ALB metric {metric_name} for {alb_arn}: {e}")
+aurora_metrics.py
+python
+Copy code
+import boto3
+from datetime import datetime, timedelta
+import logging
+
+# Initialize AWS clients and logger
+cloudwatch = boto3.client('cloudwatch')
+rds = boto3.client('rds')
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def collect_metrics(timestamp, put_metric_to_dynamodb, service_metrics):
+    current_time = datetime.utcnow()
+
+    try:
+        rds_instances = rds.describe_db_instances()
+    except Exception as e:
+        logger.error(f"Error describing RDS instances: {e}")
+        return
+
+    for rds_instance in rds_instances['DBInstances']:
+        db_instance_identifier = rds_instance['DBInstanceIdentifier']
+        for metric_name, metric_info in service_metrics.items():
+            try:
+                metrics = cloudwatch.get_metric_statistics(
+                    Namespace=metric_info['Namespace'],
+                    MetricName=metric_name,
+                    Dimensions=[{'Name': 'DBInstanceIdentifier', 'Value': db_instance_identifier}],
+                    StartTime=current_time - timedelta(minutes=5),
+                    EndTime=current_time,
+                    Period=300,
+                    Statistics=[metric_info['Statistic']]
+                )
+                for metric in metrics['Datapoints']:
+                    metric_value = metric[metric_info['Statistic']]
+                    put_metric_to_dynamodb(db_instance_identifier, 'Aurora', metric_name, metric_value, timestamp, metric_info['Threshold'])
+            except Exception as e:
+                logger.error(f"Error collecting Aurora metric {metric_name} for {db_instance_identifier}: {e}")
+backup_metrics.py
+python
+Copy code
+import boto3
+from datetime import datetime, timedelta
+import logging
+
+# Initialize AWS clients and logger
+cloudwatch = boto3.client('cloudwatch')
+backup = boto3.client('backup')
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def collect_metrics(timestamp, put_metric_to_dynamodb, service_metrics):
+    current_time = datetime.utcnow()
+
+    try:
+        backup_jobs = backup.list_backup_jobs()
+    except Exception as e:
+        logger.error(f"Error listing backup jobs: {e}")
+        return
+
+    for backup_job in backup_jobs['BackupJobs']:
+        backup_job_id = backup_job['BackupJobId']
+        for metric_name, metric_info in service_metrics.items():
+            try:
+                metrics = cloudwatch.get_metric_statistics(
+                    Namespace=metric_info['Namespace'],
+                    MetricName=metric_name,
+                    Dimensions=[{'Name': 'BackupJobId', 'Value': backup_job_id}],
+                    StartTime=current_time - timedelta(minutes=5),
+                    EndTime=current_time,
+                    Period=300,
+                    Statistics=[metric_info['Statistic']]
+                )
+                for metric in metrics['Datapoints']:
+                    metric_value = metric[metric_info['Statistic']]
+                    put_metric_to_dynamodb(backup_job_id, 'Backup', metric_name, metric_value, timestamp, metric_info['Threshold'])
+            except Exception as e:
+                logger.error(f"Error collecting Backup metric {metric_name} for {backup_job_id}: {e}")
+outposts_metrics.py
+python
+Copy code
+import boto3
+from datetime import datetime, timedelta
+import logging
+
+# Initialize AWS clients and logger
+cloudwatch = boto3.client('cloudwatch')
+outposts = boto3.client('outposts')
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def collect_metrics(timestamp, put_metric_to_dynamodb, service_metrics):
+    current_time = datetime.utcnow()
+
+    try:
+        outposts_list = outposts.list_outposts()
+    except Exception as e:
+        logger.error(f"Error listing outposts: {e}")
+        return
+
+    for outpost in outposts_list['Outposts']:
+        outpost_id = outpost['OutpostId']
+        for metric_name, metric_info in service_metrics.items():
+            try:
+                metrics = cloudwatch.get_metric_statistics(
+                    Namespace=metric_info['Namespace'],
+                    MetricName=metric_name,
+                    Dimensions=[{'Name': 'OutpostId', 'Value': outpost_id}],
+                    StartTime=current_time - timedelta(minutes=5),
+                    EndTime=current_time,
+                    Period=300,
+                    Statistics=[metric_info['Statistic']]
+                )
+                for metric in metrics['Datapoints']:
+                    metric_value = metric[metric_info['Statistic']]
+                    put_metric_to_dynamodb(outpost_id, 'Outposts', metric_name, metric_value, timestamp, metric_info['Threshold'])
+            except Exception as e:
+                logger.error(f"Error collecting Outposts metric {metric_name} for {outpost_id}: {e}")
+ec2_metrics.py
+python
+Copy code
+import boto3
+from datetime import datetime, timedelta
+import logging
+
+# Initialize AWS clients and logger
+cloudwatch = boto3.client('cloudwatch')
+ec2 = boto3.client('ec2')
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def collect_metrics(timestamp, put_metric_to_dynamodb, service_metrics):
+    current_time = datetime.utcnow()
+
+    try:
+        ec2_instances = ec2.describe_instances()
+    except Exception as e:
+        logger.error(f"Error describing EC2 instances: {e}")
+        return
+
+    for reservation in ec2_instances['Reservations']:
+        for instance in reservation['Instances']:
+            instance_id = instance['InstanceId']
+            for metric_name, metric_info in service_metrics.items():
+                try:
+                    metrics = cloudwatch.get_metric_statistics(
+                        Namespace=metric_info['Namespace'],
+                        MetricName=metric_name,
+                        Dimensions=[{'Name': 'InstanceId', 'Value': instance_id}],
+                        StartTime=current_time - timedelta(minutes=5),
+                        EndTime=current_time,
+                        Period=300,
+                        Statistics=[metric_info['Statistic']]
+                    )
+                    for metric in metrics['Datapoints']:
+                        metric_value = metric[metric_info['Statistic']]
+                        put_metric_to_dynamodb(instance_id, 'EC2', metric_name, metric_value, timestamp, metric_info['Threshold'])
+                except Exception as e:
+                    logger.error(f"Error collecting EC2 metric {metric_name} for {instance_id}: {e}")
+elasticache_metrics.py
+python
+Copy code
+import boto3
+from datetime import datetime, timedelta
+import logging
+
+# Initialize AWS clients and logger
+cloudwatch = boto3.client('cloudwatch')
+elasticache = boto3.client('elasticache')
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def collect_metrics(timestamp, put_metric_to_dynamodb, service_metrics):
+    current_time = datetime.utcnow()
+
+    try:
+        elasticache_clusters = elasticache.describe_cache_clusters()
+    except Exception as e:
+        logger.error(f"Error describing ElastiCache clusters: {e}")
+        return
+
+    for cluster in elasticache_clusters['CacheClusters']:
+        cluster_id = cluster['CacheClusterId']
+        for metric_name, metric_info in service_metrics.items():
+            try:
+                metrics = cloudwatch.get_metric_statistics(
+                    Namespace=metric_info['Namespace'],
+                    MetricName=metric_name,
+                    Dimensions=[{'Name': 'CacheClusterId', 'Value': cluster_id}],
+                    StartTime=current_time - timedelta(minutes=5),
+                    EndTime=current_time,
+                    Period=300,
+                    Statistics=[metric_info['Statistic']]
+                )
+                for metric in metrics['Datapoints']:
+                    metric_value = metric[metric_info['Statistic']]
+                    put_metric_to_dynamodb(cluster_id, 'ElastiCache', metric_name, metric_value, timestamp, metric_info['Threshold'])
+            except Exception as e:
+                logger.error(f"Error collecting ElastiCache metric {metric_name} for {cluster_id}: {e}")
+opensearch_metrics.py
+python
+Copy code
+import boto3
+from datetime import datetime, timedelta
+import logging
+
+# Initialize AWS clients and logger
+cloudwatch = boto3.client('cloudwatch')
+opensearch = boto3.client('es')
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def collect_metrics(timestamp, put_metric_to_dynamodb, service_metrics):
+    current_time = datetime.utcnow()
+
+    try:
+        opensearch_domains = opensearch.list_domain_names()
+    except Exception as e:
+        logger.error(f"Error listing OpenSearch domains: {e}")
+        return
+
+    for domain in opensearch_domains['DomainNames']:
+        domain_name = domain['DomainName']
+        for metric_name, metric_info in service_metrics.items():
+            try:
+                metrics = cloudwatch.get_metric_statistics(
+                    Namespace=metric_info['Namespace'],
+                    MetricName=metric_name,
+                    Dimensions=[{'Name': 'DomainName', 'Value': domain_name}],
+                    StartTime=current_time - timedelta(minutes=5),
+                    EndTime=current_time,
+                    Period=300,
+                    Statistics=[metric_info['Statistic']]
+                )
+                for metric in metrics['Datapoints']:
+                    metric_value = metric[metric_info['Statistic']]
+                    put_metric_to_dynamodb(domain_name, 'OpenSearch', metric_name, metric_value, timestamp, metric_info['Threshold'])
+            except Exception as e:
+                logger.error(f"Error collecting OpenSearch metric {metric_name} for {domain_name}: {e}")
+macie_metrics.py
+python
+Copy code
+import boto3
+from datetime import datetime, timedelta
+import logging
+
+# Initialize AWS clients and logger
+cloudwatch = boto3.client('cloudwatch')
+macie = boto3.client('macie2')
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def collect_metrics(timestamp, put_metric_to_dynamodb, service_metrics):
+    current_time = datetime.utcnow()
+
+    try:
+        macie_accounts = macie.list_macie_members()
+    except Exception as e:
+        logger.error(f"Error listing Macie members: {e}")
+        return
+
+    for account in macie_accounts['members']:
+        account_id = account['accountId']
+        for metric_name, metric_info in service_metrics.items():
+            try:
+                metrics = cloudwatch.get_metric_statistics(
+                    Namespace=metric_info['Namespace'],
+                    MetricName=metric_name,
+                    Dimensions=[{'Name': 'AccountId', 'Value': account_id}],
+                    StartTime=current_time - timedelta(minutes=5),
+                    EndTime=current_time,
+                    Period=300,
+                    Statistics=[metric_info['Statistic']]
+                )
+                for metric in metrics['Datapoints']:
+                    metric_value = metric[metric_info['Statistic']]
+                    put_metric_to_dynamodb(account_id, 'Macie', metric_name, metric_value, timestamp, metric_info['Threshold'])
+            except Exception as e:
+                logger.error(f"Error collecting Macie metric {metric_name} for {account_id}: {e}")
+default_metrics.json
+This file contains the default metrics and thresholds for each service.
+
+json
+Copy code
+{
+    "ALB": {
+        "RequestCount": {
+            "Namespace": "AWS/ApplicationELB",
+            "Threshold": 1000,
+            "Statistic": "Sum"
+        },
+        "TargetResponseTime": {
+            "Namespace": "AWS/ApplicationELB",
+            "Threshold": 5,
+            "Statistic": "Average"
+        }
+    },
+    "Aurora": {
+        "CPUUtilization": {
+            "Namespace": "AWS/RDS",
+            "Threshold": 75,
+            "Statistic": "Average"
+        },
+        "FreeableMemory": {
+            "Namespace": "AWS/RDS",
+            "Threshold": 500000000,
+            "Statistic": "Average"
+        }
+    },
+    "Backup": {
+        "BackupSuccess": {
+            "Namespace": "AWS/Backup",
+            "Threshold": 1,
+            "Statistic": "Sum"
+        }
+    },
+    "Outposts": {
+        "InstanceHealth": {
+            "Namespace": "AWS/Outposts",
+            "Threshold": 90,
+            "Statistic": "Average"
+        }
+    },
+    "EC2": {
+        "CPUUtilization": {
+            "Namespace": "AWS/EC2",
+            "Threshold": 80,
+            "Statistic": "Average"
+        }
+    },
+    "ElastiCache": {
+        "CPUUtilization": {
+            "Namespace": "AWS/ElastiCache",
+            "Threshold": 75,
+            "Statistic": "Average"
+        }
+    },
+    "OpenSearch": {
+        "CPUUtilization": {
+            "Namespace": "AWS/ES",
+            "Threshold": 75,
+            "Statistic": "Average"
+        }
+    },
+    "Macie": {
+        "FindingCount": {
+            "Namespace": "AWS/Macie",
+            "Threshold": 10,
+            "Statistic": "Sum"
+        }
+    }
+}
+Summary
+Main Lambda Function: lambda_function.py is the main orchestrator.
+Service Modules: Each service (ALB, Aurora, Backup, etc.) has its own module file responsible for collecting metrics.
+Default Metrics: The default_metrics.json file contains the default metrics and their thresholds for each service.
+You can organize these files in a directory structure, zip them, and deploy them to AWS Lambda as a single package. If you need further assistance with this, feel free to ask!
+
+
+
+
+
+You said:
+where is the lambda code for alarm creation?
+ChatGPT said:
+ChatGPT
+My apologies for the oversight. Below is the Lambda function code for creating CloudWatch alarms based on the metrics stored in DynamoDB. This function will:
+
+Scan the DynamoDB Table: It reads the metrics and thresholds stored in the ResourceMetrics table.
+Create Alarms: It creates CloudWatch alarms for each metric if they don't already exist.
+Tag the Alarms and Resources: It tags both the alarms and the corresponding AWS resources with "Owner" and "ownedBy".
+create_alarms_lambda.py
+python
+Copy code
+import boto3
+import json
+import logging
+
+# Initialize logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Initialize AWS clients
+cloudwatch = boto3.client('cloudwatch')
+dynamodb = boto3.client('dynamodb')
+resource_tagging = boto3.client('resourcegroupstaggingapi')
+
+# Define the tags to be applied
+TAGS = [
+    {'Key': 'Owner', 'Value': 'YourOwnerValue'},  # Replace with dynamic value if needed
+    {'Key': 'ownedBy', 'Value': 'YourOwnedByValue'}  # Replace with dynamic value if needed
+]
+
+def create_cloudwatch_alarm(resource_id, resource_type, metric_name, threshold, namespace, statistic):
+    try:
+        alarm_name = f"Alarm_{resource_id}_{metric_name}"
+        cloudwatch.put_metric_alarm(
+            AlarmName=alarm_name,
+            MetricName=metric_name,
+            Namespace=namespace,
+            Dimensions=[{'Name': resource_type, 'Value': resource_id}],
+            Statistic=statistic,
+            Period=300,
+            EvaluationPeriods=1,
+            Threshold=threshold,
+            ComparisonOperator='GreaterThanOrEqualToThreshold',
+            ActionsEnabled=True
+        )
+        logger.info(f"Successfully created alarm {alarm_name} for resource {resource_id}")
+
+        # Tag the CloudWatch alarm
+        cloudwatch.add_tags(
+            ResourceArn=f"arn:aws:cloudwatch:region:account-id:alarm:{alarm_name}",
+            Tags=TAGS
+        )
+        logger.info(f"Successfully tagged CloudWatch alarm {alarm_name}")
+
+    except Exception as e:
+        logger.error(f"Failed to create or tag alarm {alarm_name} for resource {resource_id}: {e}")
+        raise
+
+def tag_resource(resource_arn):
+    try:
+        resource_tagging.tag_resources(
+            ResourceARNList=[resource_arn],
+            Tags={tag['Key']: tag['Value'] for tag in TAGS}
+        )
+        logger.info(f"Successfully tagged resource {resource_arn}")
+    except Exception as e:
+        logger.error(f"Failed to tag resource {resource_arn}: {e}")
+        raise
+
+def lambda_handler(event, context):
+    try:
+        response = dynamodb.scan(TableName='ResourceMetrics')
+    except Exception as e:
+        logger.error(f"Failed to scan DynamoDB table: {e}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps('Error scanning DynamoDB table')
+        }
+
+    for item in response['Items']:
+        resource_id = item['ResourceID']['S']
+        resource_type = item['ResourceType']['S']
+        metric_name = item['MetricName']['S']
+        threshold = float(item['Threshold']['N'])
+        namespace = item.get('Namespace', {}).get('S', 'AWS/DefaultNamespace')
+        statistic = item.get('Statistic', {}).get('S', 'Average')
+
+        try:
+            existing_alarms = cloudwatch.describe_alarms(AlarmNames=[f"Alarm_{resource_id}_{metric_name}"])
+            if not existing_alarms['MetricAlarms']:
+                create_cloudwatch_alarm(resource_id, resource_type, metric_name, threshold, namespace, statistic)
+
+                # Tag the parent resource (e.g., EC2 instance, ALB, etc.)
+                resource_arn = f"arn:aws:{resource_type.lower()}:{namespace}:{resource_id}"
+                tag_resource(resource_arn)
+
+        except Exception as e:
+            logger.error(f"Error checking or creating alarm for resource {resource_id} and metric {metric_name}: {e}")
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps('Alarms created/updated successfully')
+    }
+Key Points in create_alarms_lambda.py
+Scan DynamoDB Table: The function scans the ResourceMetrics table to retrieve the metrics and their associated thresholds.
+
+Create Alarms: It checks if an alarm already exists for each metric. If not, it creates a new CloudWatch alarm.
+
+Tagging: The function tags both the CloudWatch alarms and the parent AWS resources (like EC2 instances, ALBs, etc.) with predefined tags.
+
+Error Handling: The function includes error handling and logging to make it more robust and fault-tolerant.
+
+Deployment and Usage
+Deploy the Lambda Function: Deploy the create_alarms_lambda.py as a separate Lambda function in AWS.
+
+Trigger the Function: This function can be triggered periodically using an EventBridge rule or invoked manually.
+
+Permissions: Ensure that the Lambda function has the necessary IAM roles and permissions to:
+
+Read from the ResourceMetrics DynamoDB table.
+Create CloudWatch alarms (cloudwatch:PutMetricAlarm).
+Tag resources (resourcegroupstaggingapi:TagResources).
+This Lambda function works alongside the metric collection Lambda function to ensure that CloudWatch alarms are dynamically created and tagged based on the metrics collected and stored in DynamoDB.
+
+
+
+
+
+You said:
+I would also like FSx and Neptune to be monitored, can you please add it?
+ChatGPT said:
+ChatGPT
+Certainly! Below, I'll provide the additional service module files for FSx and Neptune. These modules will be integrated into the existing monitoring system.
+
+fsx_metrics.py
+This module will gather metrics for FSx resources.
+
+python
+Copy code
+import boto3
+from datetime import datetime, timedelta
+import logging
+
+# Initialize AWS clients and logger
+cloudwatch = boto3.client('cloudwatch')
+fsx = boto3.client('fsx')
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def collect_metrics(timestamp, put_metric_to_dynamodb, service_metrics):
+    current_time = datetime.utcnow()
+
+    try:
+        fsx_filesystems = fsx.describe_file_systems()
+    except Exception as e:
+        logger.error(f"Error describing FSx filesystems: {e}")
+        return
+
+    for filesystem in fsx_filesystems['FileSystems']:
+        filesystem_id = filesystem['FileSystemId']
+        for metric_name, metric_info in service_metrics.items():
+            try:
+                metrics = cloudwatch.get_metric_statistics(
+                    Namespace=metric_info['Namespace'],
+                    MetricName=metric_name,
+                    Dimensions=[{'Name': 'FileSystemId', 'Value': filesystem_id}],
+                    StartTime=current_time - timedelta(minutes=5),
+                    EndTime=current_time,
+                    Period=300,
+                    Statistics=[metric_info['Statistic']]
+                )
+                for metric in metrics['Datapoints']:
+                    metric_value = metric[metric_info['Statistic']]
+                    put_metric_to_dynamodb(filesystem_id, 'FSx', metric_name, metric_value, timestamp, metric_info['Threshold'])
+            except Exception as e:
+                logger.error(f"Error collecting FSx metric {metric_name} for {filesystem_id}: {e}")
+neptune_metrics.py
+This module will gather metrics for Neptune resources.
+
+python
+Copy code
+import boto3
+from datetime import datetime, timedelta
+import logging
+
+# Initialize AWS clients and logger
+cloudwatch = boto3.client('cloudwatch')
+neptune = boto3.client('neptune')
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def collect_metrics(timestamp, put_metric_to_dynamodb, service_metrics):
+    current_time = datetime.utcnow()
+
+    try:
+        neptune_clusters = neptune.describe_db_clusters()
+    except Exception as e:
+        logger.error(f"Error describing Neptune clusters: {e}")
+        return
+
+    for cluster in neptune_clusters['DBClusters']:
+        cluster_id = cluster['DBClusterIdentifier']
+        for metric_name, metric_info in service_metrics.items():
+            try:
+                metrics = cloudwatch.get_metric_statistics(
+                    Namespace=metric_info['Namespace'],
+                    MetricName=metric_name,
+                    Dimensions=[{'Name': 'DBClusterIdentifier', 'Value': cluster_id}],
+                    StartTime=current_time - timedelta(minutes=5),
+                    EndTime=current_time,
+                    Period=300,
+                    Statistics=[metric_info['Statistic']]
+                )
+                for metric in metrics['Datapoints']:
+                    metric_value = metric[metric_info['Statistic']]
+                    put_metric_to_dynamodb(cluster_id, 'Neptune', metric_name, metric_value, timestamp, metric_info['Threshold'])
+            except Exception as e:
+                logger.error(f"Error collecting Neptune metric {metric_name} for {cluster_id}: {e}")
+default_metrics.json (Updated)
+Include the metrics and thresholds for FSx and Neptune in your default_metrics.json file.
+
+json
+Copy code
+{
+    "ALB": {
+        "RequestCount": {
+            "Namespace": "AWS/ApplicationELB",
+            "Threshold": 1000,
+            "Statistic": "Sum"
+        },
+        "TargetResponseTime": {
+            "Namespace": "AWS/ApplicationELB",
+            "Threshold": 5,
+            "Statistic": "Average"
+        }
+    },
+    "Aurora": {
+        "CPUUtilization": {
+            "Namespace": "AWS/RDS",
+            "Threshold": 75,
+            "Statistic": "Average"
+        },
+        "FreeableMemory": {
+            "Namespace": "AWS/RDS",
+            "Threshold": 500000000,
+            "Statistic": "Average"
+        }
+    },
+    "Backup": {
+        "BackupSuccess": {
+            "Namespace": "AWS/Backup",
+            "Threshold": 1,
+            "Statistic": "Sum"
+        }
+    },
+    "Outposts": {
+        "InstanceHealth": {
+            "Namespace": "AWS/Outposts",
+            "Threshold": 90,
+            "Statistic": "Average"
+        }
+    },
+    "EC2": {
+        "CPUUtilization": {
+            "Namespace": "AWS/EC2",
+            "Threshold": 80,
+            "Statistic": "Average"
+        }
+    },
+    "ElastiCache": {
+        "CPUUtilization": {
+            "Namespace": "AWS/ElastiCache",
+            "Threshold": 75,
+            "Statistic": "Average"
+        }
+    },
+    "OpenSearch": {
+        "CPUUtilization": {
+            "Namespace": "AWS/ES",
+            "Threshold": 75,
+            "Statistic": "Average"
+        }
+    },
+    "Macie": {
+        "FindingCount": {
+            "Namespace": "AWS/Macie",
+            "Threshold": 10,
+            "Statistic": "Sum"
+        }
+    },
+    "FSx": {
+        "DataReadBytes": {
+            "Namespace": "AWS/FSx",
+            "Threshold": 100000000,
+            "Statistic": "Sum"
+        },
+        "DataWriteBytes": {
+            "Namespace": "AWS/FSx",
+            "Threshold": 100000000,
+            "Statistic": "Sum"
+        }
+    },
+    "Neptune": {
+        "CPUUtilization": {
+            "Namespace": "AWS/Neptune",
+            "Threshold": 75,
+            "Statistic": "Average"
+        },
+        "FreeableMemory": {
+            "Namespace": "AWS/Neptune",
+            "Threshold": 500000000,
+            "Statistic": "Average"
+        }
+    }
+}
+Updating lambda_function.py
+You need to update the main Lambda function (lambda_function.py) to include the FSx and Neptune metrics collection.
+
+python
+Copy code
+import boto3
+import json
+from datetime import datetime
+from service_modules import alb_metrics, aurora_metrics, backup_metrics, outposts_metrics, ec2_metrics, elasticache_metrics, opensearch_metrics, macie_metrics, fsx_metrics, neptune_metrics
+
+dynamodb = boto3.client('dynamodb')
+
+def load_default_metrics():
+    with open('default_metrics.json') as f:
+        default_metrics = json.load(f)
+    return default_metrics
+
+def put_metric_to_dynamodb(resource_id, resource_type, metric_name, metric_value, timestamp, threshold):
+    dynamodb.put_item(
+        TableName='ResourceMetrics',
+        Item={
+            'ResourceID': {'S': resource_id},
+            'ResourceType': {'S': resource_type},
+            'MetricName': {'S': metric_name},
+            'MetricValue': {'N': str(metric_value)},
+            'Threshold': {'N': str(threshold)},
+            'Timestamp': {'S': timestamp}
+        }
+    )
+
+def lambda_handler(event, context):
+    current_time = datetime.utcnow()
+    timestamp = current_time.isoformat()
+
+    # Load default metrics
+    default_metrics = load_default_metrics()
+
+    # Collect metrics for each service
+    alb_metrics.collect_metrics(timestamp, put_metric_to_dynamodb, default_metrics['ALB'])
+    aurora_metrics.collect_metrics(timestamp, put_metric_to_dynamodb, default_metrics['Aurora'])
+    backup_metrics.collect_metrics(timestamp, put_metric_to_dynamodb, default_metrics['Backup'])
+    outposts_metrics.collect_metrics(timestamp, put_metric_to_dynamodb, default_metrics['Outposts'])
+    ec2_metrics.collect_metrics(timestamp, put_metric_to_dynamodb, default_metrics['EC2'])
+    elasticache_metrics.collect_metrics(timestamp, put_metric_to_dynamodb, default_metrics['ElastiCache'])
+    opensearch_metrics.collect_metrics(timestamp, put_metric_to_dynamodb, default_metrics['OpenSearch'])
+    macie_metrics.collect_metrics(timestamp, put_metric_to_dynamodb, default_metrics['Macie'])
+    fsx_metrics.collect_metrics(timestamp, put_metric_to_dynamodb, default_metrics['FSx'])
+    neptune_metrics.collect_metrics(timestamp, put_metric_to_dynamodb, default_metrics['Neptune'])
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps('Metrics gathered successfully')
+    }
+Summary
+FSx Metrics Module (fsx_metrics.py): Monitors FSx filesystems for specific metrics.
+Neptune Metrics Module (neptune_metrics.py): Monitors Neptune clusters for specific metrics.
+default_metrics.json: Updated to include FSx and Neptune metrics and thresholds.
+Main Lambda Function (lambda_function.py): Updated to call the FSx and Neptune modules.
+These additions will allow you to monitor FSx and Neptune resources as part of your existing AWS monitoring solution. You can now proceed with deploying these updates, and they should integrate seamlessly with the rest of your setup.
+
+
+
+
+
+You said:
+can you add the cdk code for dynamodb table creation?
+ChatGPT said:
+ChatGPT
+Certainly! Below is the AWS CDK (Cloud Development Kit) code to create a DynamoDB table. The table will be used to store the resource metrics as described in your setup.
+
+DynamoDB Table CDK Code
+python
+Copy code
+from aws_cdk import (
+    core as cdk,
+    aws_dynamodb as dynamodb,
+)
+
+class MonitoringDynamoDbStack(cdk.Stack):
+
+    def __init__(self, scope: cdk.Construct, id: str, **kwargs) -> None:
+        super().__init__(scope, id, **kwargs)
+
+        # Create DynamoDB table
+        table = dynamodb.Table(
+            self, "ResourceMetricsTable",
+            partition_key=dynamodb.Attribute(
+                name="ResourceID",
+                type=dynamodb.AttributeType.STRING
+            ),
+            sort_key=dynamodb.Attribute(
+                name="MetricName",
+                type=dynamodb.AttributeType.STRING
+            ),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            removal_policy=cdk.RemovalPolicy.DESTROY,  # Change to RETAIN for production environments
+            table_name="ResourceMetrics"
+        )
+
+        # Optionally, add Global Secondary Indexes (GSI) or other configurations as needed
+Explanation of the Code
+Partition Key: The ResourceID is used as the partition key, which uniquely identifies the resource in DynamoDB.
+Sort Key: The MetricName is used as the sort key, allowing you to store multiple metrics for the same resource.
+Billing Mode: The table uses PAY_PER_REQUEST billing mode, which is ideal for unpredictable workloads.
+Removal Policy: The removal policy is set to DESTROY, meaning the table will be deleted when the stack is deleted. Change this to RETAIN in a production environment to prevent data loss.
+Table Name: The table is named ResourceMetrics.
+Steps to Use the CDK Code
+Install AWS CDK: If you haven't already installed the AWS CDK, you can do so with the following command:
+
+bash
+Copy code
+npm install -g aws-cdk
+Bootstrap CDK Environment: Ensure that your environment is bootstrapped:
+
+bash
+Copy code
+cdk bootstrap
+Add the CDK Code: Create a Python file (e.g., monitoring_dynamodb_stack.py) and paste the above code.
+
+Deploy the Stack: Deploy the stack to create the DynamoDB table in your AWS account:
+
+bash
+Copy code
+cdk deploy
+Adding to an Existing CDK Application
+If you already have an existing CDK application, you can integrate this code as a stack. Simply import this stack into your main application and deploy it.
+
+Example Main Application
+python
+Copy code
+#!/usr/bin/env python3
+import aws_cdk as cdk
+from monitoring_dynamodb_stack import MonitoringDynamoDbStack
+
+app = cdk.App()
+MonitoringDynamoDbStack(app, "MonitoringDynamoDbStack")
+
+app.synth()
+This script will deploy the DynamoDB stack when run.
+
+Summary
+This CDK code will create a DynamoDB table with the required schema for storing your resource metrics. You can extend this table with additional features like Global Secondary Indexes (GSIs) or custom read/write capacity if needed for your specific use case.
