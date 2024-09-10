@@ -1,0 +1,82 @@
+import boto3
+import os
+import json
+import logging
+
+# Initialize EC2 and SNS clients
+ec2_client = boto3.client('ec2')
+sns_client = boto3.client('sns')
+
+# Setup logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Get SNS topic ARN and threshold from environment variables
+SNS_TOPIC_ARN = os.environ.get('SNS_TOPIC_ARN')
+THRESHOLD_PERCENT = int(os.environ.get('THRESHOLD_PERCENT', '80'))  # Default threshold of 80%
+
+def lambda_handler(event, context):
+    try:
+        # Get all subnets
+        response = ec2_client.describe_subnets()
+        subnets = response.get('Subnets', [])
+        
+        if not subnets:
+            logger.warning("No subnets found in the VPC.")
+            return {
+                'statusCode': 200,
+                'body': json.dumps('No subnets found.')
+            }
+
+        # Process each subnet
+        for subnet in subnets:
+            try:
+                subnet_id = subnet['SubnetId']
+                available_ips = subnet['AvailableIpAddressCount']
+                cidr_block = subnet['CidrBlock']
+                
+                # Calculate the total number of IPs (subtract 5 for reserved IPs)
+                total_ips = 2**(32 - int(cidr_block.split('/')[1])) - 5
+
+                if total_ips <= 0:
+                    logger.warning(f"Skipping invalid subnet {subnet_id} with CIDR {cidr_block}.")
+                    continue
+
+                # Calculate the percentage of used IPs
+                used_ip_percent = ((total_ips - available_ips) / total_ips) * 100
+
+                logger.info(f"Subnet {subnet_id}: {used_ip_percent:.2f}% IPs used.")
+
+                # Send an alert if the usage exceeds the threshold
+                if used_ip_percent >= THRESHOLD_PERCENT:
+                    message = (
+                        f"Alert! The subnet {subnet_id} is running out of IP addresses.\n"
+                        f"Available IPs: {available_ips}\n"
+                        f"Used IP percentage: {used_ip_percent:.2f}%\n"
+                        f"CIDR Block: {cidr_block}"
+                    )
+                    sns_client.publish(
+                        TopicArn=SNS_TOPIC_ARN,
+                        Message=message,
+                        Subject=f'VPC Subnet {subnet_id} IP Alert'
+                    )
+                    logger.info(f"Alert sent for subnet {subnet_id}.")
+                else:
+                    logger.info(f"Subnet {subnet_id} is within safe limits with {used_ip_percent:.2f}% usage.")
+            
+            except KeyError as e:
+                logger.error(f"Missing expected data in subnet {subnet.get('SubnetId', 'Unknown')} - {str(e)}")
+            except Exception as e:
+                logger.error(f"Error processing subnet {subnet.get('SubnetId', 'Unknown')}: {str(e)}")
+
+        return {
+            'statusCode': 200,
+            'body': json.dumps('Subnet IP check completed.')
+        }
+    
+    except Exception as e:
+        logger.error(f"Failed to retrieve or process subnets: {str(e)}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps('An error occurred while checking subnets.')
+        }
