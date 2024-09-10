@@ -80,3 +80,112 @@ def lambda_handler(event, context):
             'statusCode': 500,
             'body': json.dumps('An error occurred while checking subnets.')
         }
+
+
+
+#################################################################
+
+import boto3
+import os
+import json
+import logging
+
+# Initialize EC2 and SNS clients
+ec2_client = boto3.client('ec2')
+sns_client = boto3.client('sns')
+
+# Setup logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Get SNS topic ARN and threshold from environment variables
+SNS_TOPIC_ARN = os.environ.get('SNS_TOPIC_ARN')
+THRESHOLD_PERCENT = int(os.environ.get('THRESHOLD_PERCENT', '80'))  # Default threshold of 80%
+
+def get_subnet_name(subnet):
+    # Retrieve the Name tag from the subnet tags
+    tags = subnet.get('Tags', [])
+    for tag in tags:
+        if tag['Key'] == 'Name':
+            return tag['Value']
+    return 'N/A'  # Return 'N/A' if no Name tag is found
+
+def lambda_handler(event, context):
+    try:
+        # Get all VPCs
+        vpcs_response = ec2_client.describe_vpcs()
+        vpcs = vpcs_response.get('Vpcs', [])
+
+        if not vpcs:
+            logger.warning("No VPCs found in the account.")
+            return {
+                'statusCode': 200,
+                'body': json.dumps('No VPCs found.')
+            }
+
+        # Iterate through each VPC
+        for vpc in vpcs:
+            vpc_id = vpc['VpcId']
+            logger.info(f"Checking subnets in VPC {vpc_id}...")
+
+            # Get all subnets in the current VPC
+            subnets_response = ec2_client.describe_subnets(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}])
+            subnets = subnets_response.get('Subnets', [])
+
+            if not subnets:
+                logger.warning(f"No subnets found in VPC {vpc_id}.")
+                continue
+
+            # Process each subnet in the VPC
+            for subnet in subnets:
+                try:
+                    subnet_id = subnet['SubnetId']
+                    subnet_name = get_subnet_name(subnet)
+                    available_ips = subnet['AvailableIpAddressCount']
+                    cidr_block = subnet['CidrBlock']
+
+                    # Calculate the total number of IPs in the subnet based on the CIDR block
+                    total_ips = 2**(32 - int(cidr_block.split('/')[1])) - 5  # Subtract 5 for reserved IPs
+
+                    if total_ips <= 0:
+                        logger.warning(f"Skipping invalid subnet {subnet_id} in VPC {vpc_id} with CIDR {cidr_block}.")
+                        continue
+
+                    # Calculate the percentage of used IPs
+                    used_ip_percent = ((total_ips - available_ips) / total_ips) * 100
+
+                    logger.info(f"VPC {vpc_id}, Subnet {subnet_id} (Name: {subnet_name}): {used_ip_percent:.2f}% IPs used.")
+
+                    # Send an alert if the usage exceeds the threshold
+                    if used_ip_percent >= THRESHOLD_PERCENT:
+                        message = (
+                            f"Alert! The subnet {subnet_name} ({subnet_id}) in VPC {vpc_id} is running out of IP addresses.\n"
+                            f"Available IPs: {available_ips}\n"
+                            f"Used IP percentage: {used_ip_percent:.2f}%\n"
+                            f"CIDR Block: {cidr_block}"
+                        )
+                        sns_client.publish(
+                            TopicArn=SNS_TOPIC_ARN,
+                            Message=message,
+                            Subject=f'VPC {vpc_id}, Subnet {subnet_name} ({subnet_id}) IP Alert'
+                        )
+                        logger.info(f"Alert sent for subnet {subnet_id} (Name: {subnet_name}) in VPC {vpc_id}.")
+                    else:
+                        logger.info(f"Subnet {subnet_id} (Name: {subnet_name}) in VPC {vpc_id} is within safe limits with {used_ip_percent:.2f}% usage.")
+
+                except KeyError as e:
+                    logger.error(f"Missing expected data in subnet {subnet.get('SubnetId', 'Unknown')} in VPC {vpc_id} - {str(e)}")
+                except Exception as e:
+                    logger.error(f"Error processing subnet {subnet.get('SubnetId', 'Unknown')} in VPC {vpc_id}: {str(e)}")
+
+        return {
+            'statusCode': 200,
+            'body': json.dumps('Subnet IP check completed for all VPCs and subnets.')
+        }
+    
+    except Exception as e:
+        logger.error(f"Failed to retrieve or process VPCs/subnets: {str(e)}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps('An error occurred while checking subnets across all VPCs.')
+        }
