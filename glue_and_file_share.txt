@@ -1,0 +1,276 @@
+import boto3
+import json
+import logging
+from botocore.exceptions import ClientError, BotoCoreError
+
+# Set up logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Initialize AWS clients
+glue_client = boto3.client('glue')
+ses_client = boto3.client('ses')
+region = boto3.Session().region_name
+
+# SES email configuration
+SENDER_EMAIL = "sender@example.com"
+RECIPIENT_EMAIL = "recipient@example.com"
+EMAIL_SUBJECT = "Glue Job Concurrency Update Notification"
+
+def lambda_handler(event, context):
+    try:
+        # Get the list of all Glue jobs
+        all_jobs = get_all_glue_jobs()
+
+        for job_name in all_jobs:
+            # Check the Glue job tags
+            tags = get_glue_job_tags(job_name)
+
+            # Exclude jobs based on the presence of a specific tag
+            if tags.get("ExcludeFromAutomation") == "true":
+                logger.info(f"Job '{job_name}' is tagged to be excluded from automation. Skipping...")
+                continue
+
+            # Get the concurrency limit for the current job
+            concurrency_limit = get_glue_job_concurrency(job_name)
+
+            # If the concurrency limit is between 1 and 25, do nothing
+            if 1 <= concurrency_limit <= 25:
+                logger.info(f"Job '{job_name}' has an acceptable concurrency limit ({concurrency_limit}). No changes needed.")
+                continue
+            else:
+                # Otherwise, set the concurrency limit to 10 and send an email notification
+                update_glue_job_concurrency(job_name, 10)
+                send_email_notification(job_name, tags)
+
+        return response_message(200, "Glue jobs processed successfully.")
+
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        return response_message(500, f"An unexpected error occurred: {str(e)}")
+
+
+def get_all_glue_jobs():
+    """Retrieve the list of all Glue jobs using a paginator."""
+    job_names = []
+    try:
+        paginator = glue_client.get_paginator('get_jobs')
+        for page in paginator.paginate():
+            job_names.extend([job['Name'] for job in page['Jobs']])
+        return job_names
+    except (ClientError, BotoCoreError) as e:
+        logger.error(f"Error fetching Glue jobs: {str(e)}")
+        raise
+
+
+def get_glue_job_tags(job_name):
+    """Retrieve the tags for a specific Glue job."""
+    try:
+        response = glue_client.get_tags(ResourceArn=f"arn:aws:glue:{region}:{boto3.client('sts').get_caller_identity()['Account']}:job/{job_name}")
+        return response.get('Tags', {})
+    except (ClientError, BotoCoreError) as e:
+        logger.error(f"Error fetching tags for job '{job_name}': {str(e)}")
+        return {}
+
+
+def get_glue_job_concurrency(job_name):
+    """Retrieve the MaxConcurrentRuns for a Glue job."""
+    try:
+        response = glue_client.get_job(JobName=job_name)
+        return response['Job'].get('MaxConcurrentRuns', 0)  # Default to 0 if not set
+    except (ClientError, BotoCoreError) as e:
+        logger.error(f"Error fetching concurrency limit for job '{job_name}': {str(e)}")
+        return 0
+
+
+def update_glue_job_concurrency(job_name, concurrency_limit):
+    """Update the Glue job with the specified concurrency limit."""
+    try:
+        glue_client.update_job(
+            JobName=job_name,
+            JobUpdate={
+                'MaxConcurrentRuns': concurrency_limit
+            }
+        )
+        logger.info(f"Set concurrency limit for job '{job_name}' to {concurrency_limit}.")
+    except (ClientError, BotoCoreError) as e:
+        logger.error(f"Error updating Glue job '{job_name}': {str(e)}")
+
+
+def send_email_notification(job_name, tags):
+    """Send an email notification using SES when a job's concurrency limit is updated."""
+    owner = tags.get('Owner', 'Unknown')
+    body = (
+        f"Glue job '{job_name}' has had its concurrency limit updated to 10.\n\n"
+        f"Job Details:\n"
+        f"- Name: {job_name}\n"
+        f"- Region: {region}\n"
+        f"- Owner: {owner}\n"
+    )
+
+    try:
+        response = ses_client.send_email(
+            Source=SENDER_EMAIL,
+            Destination={'ToAddresses': [RECIPIENT_EMAIL]},
+            Message={
+                'Subject': {'Data': EMAIL_SUBJECT},
+                'Body': {'Text': {'Data': body}}
+            }
+        )
+        logger.info(f"Notification email sent for job '{job_name}'.")
+    except (ClientError, BotoCoreError) as e:
+        logger.error(f"Error sending email for job '{job_name}': {str(e)}")
+
+
+def response_message(status_code, message):
+    """Create a user-friendly response message."""
+    return {
+        'statusCode': status_code,
+        'message': message
+    }
+
+
+
+
+#################################
+
+
+
+import boto3
+import os
+import logging
+import time
+
+# Initialize clients for EC2, SSM, and SES
+ec2_client = boto3.client('ec2')
+ssm_client = boto3.client('ssm')
+ses_client = boto3.client('ses')
+
+# Configurable settings from environment variables
+SES_SENDER = os.environ['SES_SENDER']  # SES verified email sender
+SES_RECIPIENT = os.environ['SES_RECIPIENT']  # Recipient email
+SES_REGION = os.environ['SES_REGION']  # SES region (e.g., us-east-1)
+
+# Set up logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def lambda_handler(event, context):
+    try:
+        # Get all Linux EC2 instances
+        ec2_instances = get_linux_ec2_instances()
+        
+        # Iterate over each instance and monitor disk usage
+        for instance in ec2_instances:
+            instance_id = instance['InstanceId']
+            instance_name = get_instance_tag(instance, 'Name')
+            owner = get_instance_tag(instance, 'Owner')
+            region = instance['Placement']['AvailabilityZone'][:-1]
+            
+            try:
+                # Run command to get disk usage
+                output = run_ssm_command_with_retry(instance_id)
+                
+                # Check the output for high disk usage
+                if check_high_disk_usage(output):
+                    send_alert(instance_name, owner, instance_id, region, output)
+                    
+            except Exception as e:
+                logger.error(f"Error processing instance {instance_id} - {instance_name}: {e}")
+                
+    except Exception as e:
+        logger.critical(f"Critical error in Lambda execution: {e}")
+
+def get_linux_ec2_instances():
+    """Retrieve the list of running Linux EC2 instance IDs using a paginator."""
+    instances = []
+    paginator = ec2_client.get_paginator('describe_instances')
+    filters = [
+        {'Name': 'instance-state-name', 'Values': ['running']},
+        {'Name': 'platform-details', 'Values': ['Linux/UNIX']}
+    ]
+    
+    try:
+        response_iterator = paginator.paginate(Filters=filters)
+        for page in response_iterator:
+            for reservation in page['Reservations']:
+                for instance in reservation['Instances']:
+                    instances.append(instance)
+    except Exception as e:
+        logger.error(f"Failed to retrieve EC2 instances: {e}")
+        raise
+
+    return instances
+
+def get_instance_tag(instance, tag_key):
+    """Get the specified tag value of an instance, with fault tolerance."""
+    try:
+        for tag in instance.get('Tags', []):
+            if tag['Key'] == tag_key:
+                return tag['Value']
+        return f"Tag {tag_key} not found"
+    except Exception as e:
+        logger.warning(f"Failed to retrieve {tag_key} tag for instance {instance['InstanceId']}: {e}")
+        return f"Tag {tag_key} not available"
+
+def run_ssm_command_with_retry(instance_id, retries=3, delay=5):
+    """Send SSM command to the instance with retry logic in case of failure."""
+    command = "df -h | awk 'NR>1 {if($5+0 > 90) print $0}'"
+    
+    for attempt in range(retries):
+        try:
+            response = ssm_client.send_command(
+                InstanceIds=[instance_id],
+                DocumentName="AWS-RunShellScript",
+                Parameters={'commands': [command]},
+            )
+            
+            command_id = response['Command']['CommandId']
+            time.sleep(2)  # Pause before getting command output
+            output = ssm_client.get_command_invocation(CommandId=command_id, InstanceId=instance_id)
+            
+            return output['StandardOutputContent']
+        
+        except Exception as e:
+            logger.error(f"SSM command failed for instance {instance_id}, attempt {attempt + 1}: {e}")
+            if attempt < retries - 1:
+                time.sleep(delay)
+            else:
+                logger.critical(f"SSM command failed after {retries} attempts for instance {instance_id}")
+                raise
+
+def check_high_disk_usage(output):
+    """Check if any file share usage exceeds 90%."""
+    try:
+        return bool(output.strip())  # If df command outputs any result, there's high usage
+    except Exception as e:
+        logger.error(f"Failed to process disk usage output: {e}")
+        return False
+
+def send_alert(instance_name, owner, instance_id, region, output):
+    """Send an SES alert if high disk usage is found, including instance details."""
+    try:
+        subject = f"High File Share Usage Alert - {instance_name} ({instance_id})"
+        body = f"""
+        EC2 instance {instance_name} ({instance_id}) in region {region} has file share usage exceeding 90%.
+        
+        Owner: {owner}
+        
+        Disk Usage Details:
+        {output}
+        """
+        
+        # Send email via SES
+        response = ses_client.send_email(
+            Source=SES_SENDER,
+            Destination={'ToAddresses': [SES_RECIPIENT]},
+            Message={
+                'Subject': {'Data': subject},
+                'Body': {'Text': {'Data': body}}
+            }
+        )
+        logger.info(f"Alert sent for instance {instance_id}: {response}")
+    
+    except Exception as e:
+        logger.critical(f"Failed to send SES alert for instance {instance_id}: {e}")
+
