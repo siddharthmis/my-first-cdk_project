@@ -418,3 +418,155 @@ def response_message(status_code, message):
         'statusCode': status_code,
         'message': message
     }
+
+
+
+############################
+
+
+import boto3
+import os
+import logging
+import time
+
+# Initialize clients for EC2, SSM, and SES
+ec2_client = boto3.client('ec2')
+ssm_client = boto3.client('ssm')
+ses_client = boto3.client('ses')
+
+# Configurable settings from environment variables
+SES_SENDER = os.environ['SES_SENDER']  # SES verified email sender
+SES_RECIPIENT = os.environ['SES_RECIPIENT']  # Recipient email
+SES_REGION = os.environ['SES_REGION']  # SES region (e.g., us-east-1)
+
+# Set up logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def lambda_handler(event, context):
+    try:
+        # Get all Linux EC2 instances
+        ec2_instances = get_linux_ec2_instances()
+        logger.info(f"Found {len(ec2_instances)} Linux EC2 instances.")
+        
+        # Iterate over each instance and monitor disk usage
+        for instance in ec2_instances:
+            instance_id = instance.get('InstanceId')
+            instance_name = get_instance_tag(instance, 'Name')
+            owner = get_instance_tag(instance, 'Owner')
+            region = instance.get('Placement', {}).get('AvailabilityZone', '')[:-1]
+            
+            # Check if all critical information is available
+            if not instance_id or not region:
+                logger.error(f"Instance {instance} does not have required fields (InstanceId or Placement info)")
+                continue
+            
+            try:
+                # Run command to get disk usage
+                output = run_ssm_command_with_retry(instance_id)
+                
+                # Check the output for high disk usage
+                if check_high_disk_usage(output):
+                    send_alert(instance_name, owner, instance_id, region, output)
+                    
+            except Exception as e:
+                logger.error(f"Error processing instance {instance_id} - {instance_name}: {e}")
+                
+    except Exception as e:
+        logger.critical(f"Critical error in Lambda execution: {e}", exc_info=True)
+
+def get_linux_ec2_instances():
+    """Retrieve the list of running Linux EC2 instance IDs using a paginator."""
+    instances = []
+    paginator = ec2_client.get_paginator('describe_instances')
+    
+    filters = [
+        {'Name': 'instance-state-name', 'Values': ['running']}  # Only running instances
+    ]
+    
+    try:
+        response_iterator = paginator.paginate(Filters=filters)
+        for page in response_iterator:
+            for reservation in page.get('Reservations', []):
+                for instance in reservation.get('Instances', []):
+                    # Ensure the platform is Linux by checking the 'Platform' field (which is None for Linux)
+                    platform = instance.get('Platform')
+                    if platform is None:  # Platform is None for Linux instances
+                        instances.append(instance)
+    except Exception as e:
+        logger.error(f"Failed to retrieve EC2 instances: {e}", exc_info=True)
+        raise
+
+    return instances
+
+def get_instance_tag(instance, tag_key):
+    """Get the specified tag value of an instance, with fault tolerance."""
+    for tag in instance.get('Tags', []):
+        if isinstance(tag, dict) and tag.get('Key') == tag_key:
+            return tag.get('Value')
+    return f"Tag {tag_key} not found"
+
+def run_ssm_command_with_retry(instance_id, retries=3, delay=5):
+    """Send SSM command to the instance with retry logic in case of failure."""
+    command = "df -h | awk 'NR>1 {if($5+0 > 90) print $0}'"
+    
+    for attempt in range(retries):
+        try:
+            response = ssm_client.send_command(
+                InstanceIds=[instance_id],
+                DocumentName="AWS-RunShellScript",
+                Parameters={'commands': [command]},
+            )
+            
+            command_id = response['Command']['CommandId']
+            time.sleep(2)  # Pause before getting command output
+            output = ssm_client.get_command_invocation(CommandId=command_id, InstanceId=instance_id)
+            
+            if 'StandardOutputContent' in output:
+                return output['StandardOutputContent']
+            else:
+                logger.warning(f"No output found for instance {instance_id}")
+                return ""
+        
+        except Exception as e:
+            logger.error(f"SSM command failed for instance {instance_id}, attempt {attempt + 1}: {e}")
+            if attempt < retries - 1:
+                time.sleep(delay)
+            else:
+                logger.critical(f"SSM command failed after {retries} attempts for instance {instance_id}")
+                raise
+
+def check_high_disk_usage(output):
+    """Check if any file share usage exceeds 90%."""
+    try:
+        return bool(output.strip())  # If df command outputs any result, there's high usage
+    except Exception as e:
+        logger.error(f"Failed to process disk usage output: {e}")
+        return False
+
+def send_alert(instance_name, owner, instance_id, region, output):
+    """Send an SES alert if high disk usage is found, including instance details."""
+    try:
+        subject = f"High File Share Usage Alert - {instance_name} ({instance_id})"
+        body = f"""
+        EC2 instance {instance_name} ({instance_id}) in region {region} has file share usage exceeding 90%.
+        
+        Owner: {owner}
+        
+        Disk Usage Details:
+        {output}
+        """
+        
+        # Send email via SES
+        response = ses_client.send_email(
+            Source=SES_SENDER,
+            Destination={'ToAddresses': [SES_RECIPIENT]},
+            Message={
+                'Subject': {'Data': subject},
+                'Body': {'Text': {'Data': body}}
+            }
+        )
+        logger.info(f"Alert sent for instance {instance_id}: {response}")
+    
+    except Exception as e:
+        logger.critical(f"Failed to send SES alert for instance {instance_id}: {e}", exc_info=True)
