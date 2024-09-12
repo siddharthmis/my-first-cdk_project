@@ -274,3 +274,147 @@ def send_alert(instance_name, owner, instance_id, region, output):
     except Exception as e:
         logger.critical(f"Failed to send SES alert for instance {instance_id}: {e}")
 
+
+
+
+
+########################################
+
+
+
+
+import boto3
+import json
+import logging
+from botocore.exceptions import ClientError, BotoCoreError
+
+# Set up logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Initialize AWS clients
+glue_client = boto3.client('glue')
+ses_client = boto3.client('ses')
+region = boto3.Session().region_name
+
+# SES email configuration
+SENDER_EMAIL = "sender@example.com"
+RECIPIENT_EMAIL = "recipient@example.com"
+EMAIL_SUBJECT = "Glue Job Concurrency Update Notification"
+
+def lambda_handler(event, context):
+    try:
+        # Get the list of all Glue jobs
+        all_jobs = get_all_glue_jobs()
+
+        for job_name in all_jobs:
+            # Check the Glue job tags
+            tags = get_glue_job_tags(job_name)
+
+            # Exclude jobs based on the presence of a specific tag
+            if tags.get("ExcludeFromAutomation") == "true":
+                logger.info(f"Job '{job_name}' is tagged to be excluded from automation. Skipping...")
+                continue
+
+            # Get the concurrency limit for the current job
+            concurrency_limit = get_glue_job_concurrency(job_name)
+
+            # If the concurrency limit is between 1 and 25, do nothing
+            if 1 <= concurrency_limit <= 25:
+                logger.info(f"Job '{job_name}' has an acceptable concurrency limit ({concurrency_limit}). No changes needed.")
+                continue
+            else:
+                # Otherwise, set the concurrency limit to 10 and send an email notification
+                update_glue_job_concurrency(job_name, 10)
+                send_email_notification(job_name, tags)
+
+        return response_message(200, "Glue jobs processed successfully.")
+
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        return response_message(500, f"An unexpected error occurred: {str(e)}")
+
+
+def get_all_glue_jobs():
+    """Retrieve the list of all Glue jobs using a paginator."""
+    job_names = []
+    try:
+        paginator = glue_client.get_paginator('get_jobs')
+        for page in paginator.paginate():
+            job_names.extend([job['Name'] for job in page['Jobs']])
+        return job_names
+    except (ClientError, BotoCoreError) as e:
+        logger.error(f"Error fetching Glue jobs: {str(e)}")
+        raise
+
+
+def get_glue_job_tags(job_name):
+    """Retrieve the tags for a specific Glue job."""
+    try:
+        response = glue_client.get_tags(ResourceArn=f"arn:aws:glue:{region}:{boto3.client('sts').get_caller_identity()['Account']}:job/{job_name}")
+        return response.get('Tags', {})
+    except (ClientError, BotoCoreError) as e:
+        logger.error(f"Error fetching tags for job '{job_name}': {str(e)}")
+        return {}
+
+
+def get_glue_job_concurrency(job_name):
+    """Retrieve the MaxConcurrentRuns for a Glue job."""
+    try:
+        response = glue_client.get_job(JobName=job_name)
+        max_concurrent_runs = response['Job'].get('ExecutionProperty', {}).get('MaxConcurrentRuns')
+
+        if max_concurrent_runs is None:
+            logger.info(f"MaxConcurrentRuns not set for job '{job_name}', using default 0.")
+            return 0
+        return max_concurrent_runs
+    except (ClientError, BotoCoreError) as e:
+        logger.error(f"Error fetching concurrency limit for job '{job_name}': {str(e)}")
+        return 0  # Fallback to 0 if there's an issue retrieving the job data
+
+
+def update_glue_job_concurrency(job_name, concurrency_limit):
+    """Update the Glue job with the specified concurrency limit."""
+    try:
+        glue_client.update_job(
+            JobName=job_name,
+            JobUpdate={
+                'ExecutionProperty': {'MaxConcurrentRuns': concurrency_limit}
+            }
+        )
+        logger.info(f"Set concurrency limit for job '{job_name}' to {concurrency_limit}.")
+    except (ClientError, BotoCoreError) as e:
+        logger.error(f"Error updating Glue job '{job_name}': {str(e)}")
+
+
+def send_email_notification(job_name, tags):
+    """Send an email notification using SES when a job's concurrency limit is updated."""
+    owner = tags.get('Owner', 'Unknown')
+    body = (
+        f"Glue job '{job_name}' has had its concurrency limit updated to 10.\n\n"
+        f"Job Details:\n"
+        f"- Name: {job_name}\n"
+        f"- Region: {region}\n"
+        f"- Owner: {owner}\n"
+    )
+
+    try:
+        response = ses_client.send_email(
+            Source=SENDER_EMAIL,
+            Destination={'ToAddresses': [RECIPIENT_EMAIL]},
+            Message={
+                'Subject': {'Data': EMAIL_SUBJECT},
+                'Body': {'Text': {'Data': body}}
+            }
+        )
+        logger.info(f"Notification email sent for job '{job_name}'.")
+    except (ClientError, BotoCoreError) as e:
+        logger.error(f"Error sending email for job '{job_name}': {str(e)}")
+
+
+def response_message(status_code, message):
+    """Create a user-friendly response message."""
+    return {
+        'statusCode': status_code,
+        'message': message
+    }
