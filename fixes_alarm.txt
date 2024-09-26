@@ -3819,3 +3819,154 @@ Conclusion:
 I’ve provided the remaining service modules (AWS Backup, EC2, FSx, Macie, Neptune, OpenSearch, Outposts, and Redshift) that follow the same pattern as previously defined services. These modules will collect metrics for their respective services, include the Namespace, and store the data in DynamoDB.
 
 You can now proceed with deploying these modules, along with the already provided DynamoDB table creation code, Lambda logic for inserting metrics, and Lambda logic for alarm creation. Let me know if you need further clarifications or assistance with deployment!
+
+
+$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+
+import boto3
+import json
+import logging
+
+# Initialize logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Initialize AWS clients
+cloudwatch = boto3.client('cloudwatch')
+dynamodb = boto3.client('dynamodb')
+
+
+def get_existing_alarm(alarm_name):
+    try:
+        response = cloudwatch.describe_alarms(AlarmNames=[alarm_name])
+        if response['MetricAlarms']:
+            return response['MetricAlarms'][0]
+        else:
+            return None
+    except Exception as e:
+        logger.error(f"Error fetching existing alarm: {alarm_name}: {e}")
+        return None
+
+
+def create_or_update_alarm(resource_id, resource_type, metric_name, namespace, threshold, statistic, period, datapoints_to_alarm, evaluation_periods, comparison_operator):
+    # Construct the alarm name
+    alarm_name = f"{resource_type}_{resource_id}_{metric_name}_Alarm"
+    
+    # Check if the alarm already exists
+    existing_alarm = get_existing_alarm(alarm_name)
+
+    # If alarm exists, check parameters for updates
+    if existing_alarm:
+        logger.info(f"Existing alarm found: {alarm_name}. Checking for updates...")
+
+        # Check if alarm needs updating
+        if (existing_alarm['Threshold'] != threshold or
+            existing_alarm['Period'] != period or
+            existing_alarm['EvaluationPeriods'] != evaluation_periods or
+            existing_alarm['DatapointsToAlarm'] != datapoints_to_alarm or
+            existing_alarm['ComparisonOperator'] != comparison_operator):
+            
+            logger.info(f"Updating existing alarm: {alarm_name}")
+            try:
+                # Update alarm if parameters have changed
+                cloudwatch.put_metric_alarm(
+                    AlarmName=alarm_name,
+                    MetricName=metric_name,
+                    Namespace=namespace,
+                    Dimensions=[{'Name': resource_type, 'Value': resource_id}],
+                    Statistic=statistic,
+                    Period=period,
+                    EvaluationPeriods=evaluation_periods,
+                    DatapointsToAlarm=datapoints_to_alarm,
+                    Threshold=threshold,
+                    ComparisonOperator=comparison_operator,
+                    ActionsEnabled=True,  # Enable actions
+                    AlarmActions=[],  # Add your SNS topic ARN or other actions here if needed
+                    Tags=[
+                        {'Key': 'Owner', 'Value': 'team-owner'},
+                        {'Key': 'ownedBy', 'Value': 'cloudwatch-monitoring'}
+                    ]
+                )
+                logger.info(f"Alarm updated: {alarm_name} for resource: {resource_id}")
+            except Exception as e:
+                logger.error(f"Error updating alarm: {alarm_name} for resource: {resource_id}: {e}")
+                raise
+        else:
+            logger.info(f"No updates needed for alarm: {alarm_name}")
+    else:
+        # Create the alarm if it does not exist
+        logger.info(f"Creating new alarm: {alarm_name}")
+        try:
+            cloudwatch.put_metric_alarm(
+                AlarmName=alarm_name,
+                MetricName=metric_name,
+                Namespace=namespace,
+                Dimensions=[{'Name': resource_type, 'Value': resource_id}],
+                Statistic=statistic,
+                Period=period,
+                EvaluationPeriods=evaluation_periods,
+                DatapointsToAlarm=datapoints_to_alarm,
+                Threshold=threshold,
+                ComparisonOperator=comparison_operator,
+                ActionsEnabled=True,  # Enable actions
+                AlarmActions=[],  # Add your SNS topic ARN or other actions here if needed
+                Tags=[
+                    {'Key': 'Owner', 'Value': 'team-owner'},
+                    {'Key': 'ownedBy', 'Value': 'cloudwatch-monitoring'}
+                ]
+            )
+            logger.info(f"Alarm created: {alarm_name} for resource: {resource_id}")
+        except Exception as e:
+            logger.error(f"Error creating alarm: {alarm_name} for resource: {resource_id}: {e}")
+            raise
+
+
+def lambda_handler(event, context):
+    try:
+        # Scan the DynamoDB table to get all metric configurations
+        response = dynamodb.scan(TableName='ResourceMetrics')
+    except Exception as e:
+        logger.error(f"Failed to scan DynamoDB table: {e}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps('Error scanning DynamoDB table')
+        }
+
+    # Iterate over each metric configuration in the DynamoDB table
+    for item in response['Items']:
+        try:
+            resource_id = item['ResourceID']['S']
+            resource_type = item['ResourceType']['S']
+            metric_name = item['MetricName']['S']
+            namespace = item['Namespace']['S']
+            threshold = float(item['Threshold']['N'])
+            period = int(item['Period']['N'])
+            datapoints_to_alarm = int(item['DatapointsToAlarm']['N'])
+            evaluation_periods = int(item['EvaluationPeriods']['N'])
+            comparison_operator = item['ComparisonOperator']['S']
+            statistic = item['Statistic']['S']
+
+            # Create or update CloudWatch alarm
+            create_or_update_alarm(
+                resource_id=resource_id,
+                resource_type=resource_type,
+                metric_name=metric_name,
+                namespace=namespace,
+                threshold=threshold,
+                statistic=statistic,
+                period=period,
+                datapoints_to_alarm=datapoints_to_alarm,
+                evaluation_periods=evaluation_periods,
+                comparison_operator=comparison_operator
+            )
+
+        except Exception as e:
+            logger.error(f"Error processing item from DynamoDB: {item} - {e}")
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps('Alarms processed successfully')
+    }
