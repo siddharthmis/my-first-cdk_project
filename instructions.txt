@@ -1,0 +1,35 @@
+Step-by-Step Guide to Creating an Incoming Webhook on Microsoft Teams:
+Open Microsoft Teams:
+
+Launch the Microsoft Teams desktop or web app.
+Select the Desired Team and Channel:
+
+In the left sidebar, find and select the Team where you want to add the webhook.
+Select the specific channel within that Team where you want notifications to be sent.
+Click on "Connectors":
+
+Click on the ellipsis (...) next to the channel name where you want to add the webhook.
+From the dropdown menu, select Connectors.
+Search for Incoming Webhook:
+
+In the "Connectors" panel, search for Incoming Webhook in the search bar.
+Add Incoming Webhook:
+
+Once you find Incoming Webhook, click Configure.
+Configure the Webhook:
+
+Name your Webhook: Enter a name for your webhook, which will be displayed when notifications are posted in the channel.
+Upload an Image (Optional): You can upload an image to be associated with the webhook, which will appear next to the messages posted by the webhook.
+Create the Webhook:
+
+After configuring the webhook, click Create.
+Copy the Webhook URL:
+
+After creating the webhook, Teams will generate a Webhook URL.
+Copy this URL — you’ll need it to send messages to the Teams channel from external applications (like AWS Lambda).
+Save the Webhook URL:
+
+Save the webhook URL somewhere secure, or use it immediately in your application (e.g., as an environment variable in AWS Lambda).
+Finish:
+
+Click Done to close the configuration window.
