@@ -451,3 +451,63 @@ Conclusion:
 This DynamoDB table structure will help you track the state of CloudWatch alarms and manage Microsoft Teams notifications accordingly. It ensures you can reply to existing notifications when the alarm changes state, and you avoid sending duplicate notifications for the same alarm within a short time frame.
 
 If you need further clarification or adjustments, feel free to ask!
+
+
+########################################
+
+
+
+The TaskId can be obtained from the describe_maintenance_window_executions and describe_maintenance_window_execution_tasks API calls in AWS Systems Manager (SSM).
+
+Here’s how you can retrieve it step by step:
+
+Get the WindowExecutionId: First, you need to describe the maintenance window executions to get the WindowExecutionId. This ID refers to a specific execution of a maintenance window.
+
+python
+Copy code
+import boto3
+
+# Initialize the SSM client
+ssm = boto3.client('ssm')
+
+# Describe Maintenance Window Executions
+response = ssm.describe_maintenance_window_executions(
+    WindowId='your-window-id'  # ID of the maintenance window
+)
+
+# Extract WindowExecutionId
+window_execution_id = response['WindowExecutions'][0]['WindowExecutionId']
+print(f"WindowExecutionId: {window_execution_id}")
+Get the TaskId using WindowExecutionId: After retrieving the WindowExecutionId, you can use the describe_maintenance_window_execution_tasks API to list the tasks executed during that maintenance window execution, where you will find the TaskId.
+
+python
+Copy code
+# Describe Maintenance Window Execution Tasks using WindowExecutionId
+task_response = ssm.describe_maintenance_window_execution_tasks(
+    WindowExecutionId=window_execution_id
+)
+
+# Extract TaskId
+task_id = task_response['WindowExecutionTaskIdentities'][0]['TaskId']
+print(f"TaskId: {task_id}")
+Use the TaskId in describe_maintenance_windows_execution_task_invocations: Now that you have both the WindowExecutionId and the TaskId, you can use them to retrieve details about specific invocations of the task.
+
+python
+Copy code
+# Describe Task Invocations using WindowExecutionId and TaskId
+invocation_response = ssm.describe_maintenance_windows_execution_task_invocations(
+    WindowExecutionId=window_execution_id,
+    TaskId=task_id
+)
+
+print(invocation_response)
+Summary of Sources:
+WindowExecutionId: From the describe_maintenance_window_executions call.
+TaskId: From the describe_maintenance_window_execution_tasks call, which lists the tasks executed in a specific maintenance window execution.
+These steps will provide you with the TaskId, which you can use in the describe_maintenance_windows_execution_task_invocations API to get task invocation details.
+
+
+
+
+
+
