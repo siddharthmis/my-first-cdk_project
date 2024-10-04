@@ -1,0 +1,132 @@
+import json
+import boto3
+import logging
+import os
+import requests
+from botocore.exceptions import ClientError
+from datetime import datetime
+from time import sleep
+
+# Set up logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Environment variables
+TABLE_NAME = os.getenv('DYNAMODB_TABLE_NAME')
+MS_TEAMS_WEBHOOK_URL = os.getenv('MS_TEAMS_WEBHOOK_URL')  # Teams Webhook URL
+EXCLUSION_TAG_KEY = os.getenv('EXCLUSION_TAG_KEY', 'ExcludeFromAutomation')
+EXCLUSION_TAG_VALUE = os.getenv('EXCLUSION_TAG_VALUE', 'true')
+
+dynamodb = boto3.resource('dynamodb')
+cloudwatch = boto3.client('cloudwatch')
+table = dynamodb.Table(TABLE_NAME)
+
+def lambda_handler(event, context):
+    account_id = event['account']
+    cloudwatch_alarm = event['detail']['alarmName']
+    alarm_state = event['detail']['state']['value']
+    alarm_description = event['detail'].get('alarmDescription', 'No description provided')
+    region = event['region']
+    link = f'https://console.aws.amazon.com/cloudwatch/home?region={region}#alarmsV2:alarm/{cloudwatch_alarm}'
+    current_date = datetime.utcnow().date().isoformat()
+
+    # Check if the alarm has the exclusion tag
+    if is_alarm_excluded(cloudwatch_alarm):
+        logger.info(f"Alarm {cloudwatch_alarm} is excluded from automation.")
+        return {'statusCode': 200, 'body': json.dumps('Alarm is excluded from automation')}
+
+    # Retrieve the alarm from DynamoDB
+    alarm_record = get_item(account_id, cloudwatch_alarm)
+    
+    if alarm_record:
+        teams_message_id = alarm_record['TeamsMessageId']
+        if alarm_state == 'OK':
+            # Post an update to Teams (if needed)
+            post_message_to_teams(teams_message_id, f'Alarm {cloudwatch_alarm} has returned to OK state at {datetime.utcnow().isoformat()}.')
+
+            # Delete the DynamoDB record since the alarm is resolved
+            delete_item(account_id, cloudwatch_alarm)
+            logger.info(f"Deleted alarm {cloudwatch_alarm} from DynamoDB.")
+        else:
+            # If still in ALARM state, update the Teams message
+            post_message_to_teams(teams_message_id, f'Alarm is still in ALARM state at {datetime.utcnow().isoformat()}.')
+    else:
+        # Alarm is not in DynamoDB; post a new notification if it's in ALARM state
+        if alarm_state == 'ALARM':
+            teams_message_id = post_message_to_teams(None, create_teams_message(account_id, cloudwatch_alarm, alarm_description, link, alarm_state))
+            if teams_message_id:
+                put_item(account_id, cloudwatch_alarm, teams_message_id, current_date, alarm_state)
+
+    return {'statusCode': 200, 'body': json.dumps('Lambda executed successfully')}
+
+def is_alarm_excluded(alarm_name):
+    """Check if the alarm has the exclusion tag."""
+    try:
+        response = cloudwatch.list_tags_for_resource(
+            ResourceARN=f'arn:aws:cloudwatch:{os.getenv("AWS_REGION")}:{os.getenv("AWS_ACCOUNT_ID")}:alarm:{alarm_name}'
+        )
+        tags = response.get('Tags', [])
+        for tag in tags:
+            if tag['Key'] == EXCLUSION_TAG_KEY and tag['Value'] == EXCLUSION_TAG_VALUE:
+                return True
+    except ClientError as e:
+        logger.error(f"Error fetching tags for alarm {alarm_name}: {e.response['Error']['Message']}")
+        return False
+    return False
+
+def get_item(account_id, alarm_name):
+    """Retrieve an item from DynamoDB."""
+    try:
+        response = table.get_item(Key={'AccountId': account_id, 'AlarmName': alarm_name})
+        return response.get('Item')
+    except ClientError as e:
+        logger.error(f"Error getting item from DynamoDB: {e.response['Error']['Message']}")
+        return None
+
+def put_item(account_id, alarm_name, teams_message_id, last_updated, alarm_state):
+    """Insert or update an item in DynamoDB."""
+    try:
+        table.put_item(
+            Item={
+                'AccountId': account_id,
+                'AlarmName': alarm_name,
+                'TeamsMessageId': teams_message_id,
+                'LastUpdated': last_updated,
+                'AlarmState': alarm_state
+            }
+        )
+    except ClientError as e:
+        logger.error(f"Error putting item to DynamoDB: {e.response['Error']['Message']}")
+
+def delete_item(account_id, alarm_name):
+    """Delete an item from DynamoDB."""
+    try:
+        table.delete_item(Key={'AccountId': account_id, 'AlarmName': alarm_name})
+        logger.info(f"Successfully deleted DynamoDB entry for {alarm_name}.")
+    except ClientError as e:
+        logger.error(f"Error deleting item from DynamoDB: {e.response['Error']['Message']}")
+
+def post_message_to_teams(message_id, message_content):
+    """Send or reply to a message in MS Teams."""
+    headers = {'Content-Type': 'application/json'}
+    payload = {
+        'text': message_content
+    }
+    try:
+        response = requests.post(MS_TEAMS_WEBHOOK_URL, headers=headers, data=json.dumps(payload))
+        response.raise_for_status()
+        return response.text  # Return message ID or unique response
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error sending message to MS Teams: {e}")
+        return None
+
+def create_teams_message(account_id, alarm_name, alarm_description, link, alarm_state):
+    """Create the content for the Teams notification."""
+    return (
+        f"**CloudWatch Alarm Notification**\n"
+        f"- **Alarm Name**: {alarm_name}\n"
+        f"- **Account ID**: {account_id}\n"
+        f"- **State**: {alarm_state}\n"
+        f"- **Description**: {alarm_description}\n"
+        f"- **[View Alarm in CloudWatch]({link})**"
+    )
