@@ -21,6 +21,10 @@ dynamodb = boto3.resource('dynamodb')
 cloudwatch = boto3.client('cloudwatch')
 table = dynamodb.Table(TABLE_NAME)
 
+# Retry constants
+MAX_RETRIES = 3
+BACKOFF_TIME = 2
+
 def lambda_handler(event, context):
     account_id = event['account']
     cloudwatch_alarm = event['detail']['alarmName']
@@ -36,26 +40,26 @@ def lambda_handler(event, context):
         return {'statusCode': 200, 'body': json.dumps('Alarm is excluded from automation')}
 
     # Retrieve the alarm from DynamoDB
-    alarm_record = get_item(account_id, cloudwatch_alarm)
+    alarm_record = get_item_with_retries(account_id, cloudwatch_alarm)
     
     if alarm_record:
         teams_message_id = alarm_record['TeamsMessageId']
         if alarm_state == 'OK':
-            # Post an update to Teams (if needed)
-            post_message_to_teams(teams_message_id, f'Alarm {cloudwatch_alarm} has returned to OK state at {datetime.utcnow().isoformat()}.')
+            # Post an update to Teams (simulated reply with reference)
+            post_message_with_retries(teams_message_id, f"Follow-up: Alarm {cloudwatch_alarm} has returned to OK state at {datetime.utcnow().isoformat()}.\n*(Related to earlier ALARM state)*")
 
             # Delete the DynamoDB record since the alarm is resolved
-            delete_item(account_id, cloudwatch_alarm)
+            delete_item_with_retries(account_id, cloudwatch_alarm)
             logger.info(f"Deleted alarm {cloudwatch_alarm} from DynamoDB.")
         else:
             # If still in ALARM state, update the Teams message
-            post_message_to_teams(teams_message_id, f'Alarm is still in ALARM state at {datetime.utcnow().isoformat()}.')
+            post_message_with_retries(teams_message_id, f'Alarm is still in ALARM state at {datetime.utcnow().isoformat()}.')
     else:
         # Alarm is not in DynamoDB; post a new notification if it's in ALARM state
         if alarm_state == 'ALARM':
-            teams_message_id = post_message_to_teams(None, create_teams_message(account_id, cloudwatch_alarm, alarm_description, link, alarm_state))
+            teams_message_id = post_message_with_retries(None, create_teams_message(account_id, cloudwatch_alarm, alarm_description, link, alarm_state))
             if teams_message_id:
-                put_item(account_id, cloudwatch_alarm, teams_message_id, current_date, alarm_state)
+                put_item_with_retries(account_id, cloudwatch_alarm, teams_message_id, current_date, alarm_state)
 
     return {'statusCode': 200, 'body': json.dumps('Lambda executed successfully')}
 
@@ -74,51 +78,76 @@ def is_alarm_excluded(alarm_name):
         return False
     return False
 
-def get_item(account_id, alarm_name):
-    """Retrieve an item from DynamoDB."""
-    try:
-        response = table.get_item(Key={'AccountId': account_id, 'AlarmName': alarm_name})
-        return response.get('Item')
-    except ClientError as e:
-        logger.error(f"Error getting item from DynamoDB: {e.response['Error']['Message']}")
-        return None
+def get_item_with_retries(account_id, alarm_name):
+    """Retrieve an item from DynamoDB with retries."""
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = table.get_item(Key={'AccountId': account_id, 'AlarmName': alarm_name})
+            return response.get('Item')
+        except ClientError as e:
+            logger.error(f"Error getting item from DynamoDB: {e.response['Error']['Message']}")
+            if attempt < MAX_RETRIES - 1:
+                logger.info(f"Retrying to get item from DynamoDB. Attempt {attempt + 1}")
+                sleep(BACKOFF_TIME ** attempt)
+            else:
+                raise e
 
-def put_item(account_id, alarm_name, teams_message_id, last_updated, alarm_state):
-    """Insert or update an item in DynamoDB."""
-    try:
-        table.put_item(
-            Item={
-                'AccountId': account_id,
-                'AlarmName': alarm_name,
-                'TeamsMessageId': teams_message_id,
-                'LastUpdated': last_updated,
-                'AlarmState': alarm_state
-            }
-        )
-    except ClientError as e:
-        logger.error(f"Error putting item to DynamoDB: {e.response['Error']['Message']}")
+def put_item_with_retries(account_id, alarm_name, teams_message_id, last_updated, alarm_state):
+    """Insert or update an item in DynamoDB with retries."""
+    for attempt in range(MAX_RETRIES):
+        try:
+            table.put_item(
+                Item={
+                    'AccountId': account_id,
+                    'AlarmName': alarm_name,
+                    'TeamsMessageId': teams_message_id,
+                    'LastUpdated': last_updated,
+                    'AlarmState': alarm_state
+                }
+            )
+            logger.info(f"Successfully inserted/updated item for alarm {alarm_name} in DynamoDB.")
+            break
+        except ClientError as e:
+            logger.error(f"Error putting item to DynamoDB: {e.response['Error']['Message']}")
+            if attempt < MAX_RETRIES - 1:
+                logger.info(f"Retrying to put item into DynamoDB. Attempt {attempt + 1}")
+                sleep(BACKOFF_TIME ** attempt)
+            else:
+                raise e
 
-def delete_item(account_id, alarm_name):
-    """Delete an item from DynamoDB."""
-    try:
-        table.delete_item(Key={'AccountId': account_id, 'AlarmName': alarm_name})
-        logger.info(f"Successfully deleted DynamoDB entry for {alarm_name}.")
-    except ClientError as e:
-        logger.error(f"Error deleting item from DynamoDB: {e.response['Error']['Message']}")
+def delete_item_with_retries(account_id, alarm_name):
+    """Delete an item from DynamoDB with retries."""
+    for attempt in range(MAX_RETRIES):
+        try:
+            table.delete_item(Key={'AccountId': account_id, 'AlarmName': alarm_name})
+            logger.info(f"Successfully deleted DynamoDB entry for {alarm_name}.")
+            break
+        except ClientError as e:
+            logger.error(f"Error deleting item from DynamoDB: {e.response['Error']['Message']}")
+            if attempt < MAX_RETRIES - 1:
+                logger.info(f"Retrying to delete item from DynamoDB. Attempt {attempt + 1}")
+                sleep(BACKOFF_TIME ** attempt)
+            else:
+                raise e
 
-def post_message_to_teams(message_id, message_content):
-    """Send or reply to a message in MS Teams."""
+def post_message_with_retries(message_id, message_content):
+    """Send a message to MS Teams with retries."""
     headers = {'Content-Type': 'application/json'}
-    payload = {
-        'text': message_content
-    }
-    try:
-        response = requests.post(MS_TEAMS_WEBHOOK_URL, headers=headers, data=json.dumps(payload))
-        response.raise_for_status()
-        return response.text  # Return message ID or unique response
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error sending message to MS Teams: {e}")
-        return None
+    payload = {'text': message_content}
+    
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = requests.post(MS_TEAMS_WEBHOOK_URL, headers=headers, data=json.dumps(payload))
+            response.raise_for_status()
+            logger.info(f"Successfully sent message to MS Teams: {message_content}")
+            return response.text  # Return message ID or unique response
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error sending message to MS Teams: {e}")
+            if attempt < MAX_RETRIES - 1:
+                logger.info(f"Retrying to send message to MS Teams. Attempt {attempt + 1}")
+                sleep(BACKOFF_TIME ** attempt)
+            else:
+                raise e
 
 def create_teams_message(account_id, alarm_name, alarm_description, link, alarm_state):
     """Create the content for the Teams notification."""
