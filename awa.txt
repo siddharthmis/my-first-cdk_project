@@ -862,3 +862,72 @@ The DynamoDB table is crucial for ensuring that your AWS Health Aware system doe
 
 
 
+##########
+
+import os
+import boto3
+import json
+from botocore.exceptions import ClientError
+
+ses = boto3.client('ses')
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table(os.environ['DDB_TABLE_NAME'])
+
+def lambda_handler(event, context):
+    event_detail = event['detail']
+    event_arn = event_detail['eventArn']
+    status_code = event_detail.get('statusCode', 'open')  # Get the event status
+
+    if status_code == 'closed':
+        # If the event is resolved, remove the entry from DynamoDB
+        try:
+            response = table.delete_item(Key={'eventArn': event_arn})
+            print(f"Event {event_arn} has been resolved and removed from DynamoDB.")
+        except ClientError as e:
+            print(f"Error deleting item: {e.response['Error']['Message']}")
+        return
+
+    # Process the event as normal if it's not resolved
+    try:
+        response = table.get_item(Key={'eventArn': event_arn})
+        if 'Item' in response:
+            print(f"Event {event_arn} has already been processed.")
+            return
+    except ClientError as e:
+        print(e.response['Error']['Message'])
+
+    # Send email and store event (same as before)
+    email_body = f"""
+    AWS Health Event: {event_detail['eventTypeCode']}
+    Status: {status_code}
+    Summary: {event_detail.get('eventDescription', [{}])[0].get('latestDescription', 'No description available')}
+    """
+    
+    # Send the email using SES
+    try:
+        ses.send_email(
+            Source=os.environ['SES_EMAIL_SOURCE'],
+            Destination={
+                'ToAddresses': [os.environ['SES_EMAIL_DESTINATION']],
+            },
+            Message={
+                'Subject': {
+                    'Data': f"AWS Health Event Notification: {event_detail['eventTypeCode']}"
+                },
+                'Body': {
+                    'Text': {
+                        'Data': email_body
+                    }
+                }
+            }
+        )
+    except ClientError as e:
+        print(f"Error sending email: {e.response['Error']['Message']}")
+
+    # Store the processed event in DynamoDB
+    try:
+        table.put_item(Item={'eventArn': event_arn})
+    except ClientError as e:
+        print(f"Error writing to DynamoDB: {e.response['Error']['Message']}")
+
+    return {"statusCode": 200, "body": json.dumps(event_detail)}
