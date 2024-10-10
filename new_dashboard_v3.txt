@@ -80,6 +80,7 @@ def create_resource_summary_widgets(resource_counts):
                 "period": 300  # Ensure valid period for single value metrics
             }
         }
+        logger.info(f"Created resource summary widget: {json.dumps(widget)}")
         widgets.append(widget)
         y += 6
     return widgets
@@ -109,6 +110,7 @@ def create_aggregate_metric_widget(metrics_data):
                 }
             }
         }
+        logger.info(f"Created aggregate metric widget: {json.dumps(widget)}")
         widgets.append(widget)
         y += 6
     return widgets
@@ -130,6 +132,7 @@ def create_top_n_widget(resource_type, metric_name, n=5):
             "title": f"Top {n} {resource_type} Resources by {metric_name}"
         }
     }
+    logger.info(f"Created log query widget: {json.dumps(widget)}")
     return widget
 
 # Widget for Status Summary
@@ -155,6 +158,7 @@ def create_status_summary_widget(resource_counts, unhealthy_counts):
                 "period": 300  # Ensure valid period for single value metrics
             }
         }
+        logger.info(f"Created status summary widget: {json.dumps(widget)}")
         widgets.append(widget)
         y += 6
     return widgets
@@ -194,6 +198,7 @@ def create_anomaly_detection_widget(metrics_data):
                 }
             }
         }
+        logger.info(f"Created anomaly detection widget: {json.dumps(widget)}")
         widgets.append(widget)
         y += 6
     return widgets
@@ -248,11 +253,17 @@ def lambda_handler(event, context):
         # Create the dashboard body with widgets
         dashboard_body = {"widgets": widgets}
 
+        # Log the full dashboard body for debugging
+        logger.info(f"Final dashboard body: {json.dumps(dashboard_body, indent=2)}")
+
         # Create or update the CloudWatch dashboard
-        cloudwatch.put_dashboard(
+        response = cloudwatch.put_dashboard(
             DashboardName="DynamicResourceDashboard",
             DashboardBody=json.dumps(dashboard_body)
         )
+
+        # Log the CloudWatch response to capture any errors
+        logger.info(f"CloudWatch response: {json.dumps(response, indent=2)}")
         logger.info("Successfully created/updated CloudWatch dashboard.")
 
     except Exception as e:
