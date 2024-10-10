@@ -11,6 +11,25 @@ logs_client = boto3.client('logs')
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+# Dictionary to map resource types to the correct dimension name and namespace
+dimension_name_map = {
+    'EC2': ('InstanceId', 'AWS/EC2'),
+    'ALB': ('LoadBalancer', 'AWS/ApplicationELB'),
+    'ALBTarget': ('TargetGroup', 'AWS/ApplicationELB'),
+    'RDS': ('DBInstanceIdentifier', 'AWS/RDS'),
+    'Lambda': ('FunctionName', 'AWS/Lambda'),
+    'ECS': ('ClusterName', 'AWS/ECS'),
+    'Elasticache': ('CacheClusterId', 'AWS/ElastiCache'),
+    'Redshift': ('ClusterIdentifier', 'AWS/Redshift'),
+    'FSx': ('FileSystemId', 'AWS/FSx'),
+    'Macie': ('MemberAccountId', 'AWS/Macie'),
+    'Neptune': ('DBInstanceIdentifier', 'AWS/Neptune'),
+    'Opensearch': ('DomainName', 'AWS/ES'),  # AWS ES Namespace (Elasticsearch)
+    'Outposts': ('OutpostId', 'AWS/Outposts'),
+    'Aurora': ('DBClusterIdentifier', 'AWS/RDS'),  # Aurora uses RDS namespace
+    'Backup': ('ResourceArn', 'AWS/Backup'),
+}
+
 # Function to get all DynamoDB entries with proper error handling
 def get_all_dynamodb_entries():
     try:
@@ -32,7 +51,11 @@ def create_metric_widgets(resource_data):
         resource_type = resource['ResourceType']['S']
         resource_id = resource['ResourceID']['S']
         metric_name = resource['MetricName']['S']
-        namespace = resource['Namespace']['S']
+        
+        # Get the correct dimension name and namespace based on resource type
+        dimension_name, namespace = dimension_name_map.get(resource_type, ('ResourceID', 'AWS/Unknown'))
+
+        # Dynamically fetch period and stat
         period = int(resource.get('Period', {}).get('N', 300))  # Default to 300 seconds if not provided
         stat = resource.get('Statistic', {}).get('S', 'Average')  # Default to 'Average' if not provided
 
@@ -45,7 +68,7 @@ def create_metric_widgets(resource_data):
             "height": 6,
             "properties": {
                 "metrics": [
-                    [namespace, metric_name, "ResourceID", resource_id]
+                    [namespace, metric_name, dimension_name, resource_id]
                 ],
                 "view": "timeSeries",
                 "region": "us-east-1",
@@ -95,7 +118,7 @@ def create_top_n_resources_widget(resource_data, metric_name="CPUUtilization", n
         "height": 6,
         "properties": {
             "metrics": [
-                ["AWS/EC2", metric_name, "ResourceID", resource['ResourceID']['S']]
+                ["AWS/EC2", metric_name, dimension_name_map['EC2'][0], resource['ResourceID']['S']]
                 for resource in resource_data[:n]  # Top N resources dynamically fetched
             ],
             "view": "bar",  # Bar chart for top resources by utilization
