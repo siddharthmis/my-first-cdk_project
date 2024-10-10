@@ -1,0 +1,136 @@
+import boto3
+import json
+import logging
+
+# Initialize AWS clients
+dynamodb = boto3.client('dynamodb')
+cloudwatch = boto3.client('cloudwatch')
+
+# Setup logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Function to get all DynamoDB entries
+def get_all_dynamodb_entries():
+    try:
+        response = dynamodb.scan(TableName='ResourceMetrics')
+        entries = response['Items']
+        logger.info(f"Fetched {len(entries)} entries from DynamoDB.")
+        return entries
+    except Exception as e:
+        logger.error(f"Error fetching entries from DynamoDB: {e}")
+        return []
+
+# Function to generate a dynamic log group name based on resource type and name
+def generate_log_group_name(resource_type, resource_name):
+    # Example: /aws/service/resource_name (adjust according to your naming convention)
+    return f"/aws/{resource_type.lower()}/{resource_name}"
+
+# Function to create/update a CloudWatch Dashboard with dynamically generated metrics and log group names
+def create_dashboard(resource_counts, metrics_data, logs_data):
+    dashboard_name = "DynamicResourceDashboard"
+    widgets = []
+
+    # Add resource counters with dynamically generated metrics for each service
+    x = 0  # Widget x-position in the dashboard
+    y = 0  # Widget y-position in the dashboard
+    for service, count in resource_counts.items():
+        widget = {
+            "type": "metric",
+            "x": x,
+            "y": y,
+            "width": 6,
+            "height": 6,
+            "properties": {
+                "metrics": metrics_data[service],  # Dynamic metrics for the service
+                "view": "timeSeries",
+                "region": "us-east-1",  # Adjust to your region
+                "title": f"{service} Resource Metrics",
+                "stat": "Average",
+                "period": 300,
+                "liveData": True,  # Enable live data streaming
+                "annotations": {
+                    "horizontal": [
+                        {
+                            "label": "High Threshold",
+                            "value": 80,
+                            "color": "#ff0000",
+                            "fill": "above"
+                        }
+                    ]
+                }
+            }
+        }
+        widgets.append(widget)
+        y += 6  # Move to the next widget position in the dashboard
+
+    # Add CloudWatch Logs Insights widgets for each service/resource
+    for service, log_group_name in logs_data.items():
+        log_widget = {
+            "type": "log",
+            "x": 0,
+            "y": y,
+            "width": 12,
+            "height": 6,
+            "properties": {
+                "logGroupNames": [log_group_name],
+                "queryString": "fields @timestamp, @message | sort @timestamp desc | limit 20",
+                "view": "table",
+                "region": "us-east-1",
+                "title": f"{service} Logs Query"
+            }
+        }
+        widgets.append(log_widget)
+        y += 6  # Move to the next position for additional widgets
+
+    # Create the dashboard body with widgets
+    dashboard_body = {
+        "widgets": widgets
+    }
+
+    # Put the dashboard
+    try:
+        cloudwatch.put_dashboard(
+            DashboardName=dashboard_name,
+            DashboardBody=json.dumps(dashboard_body)
+        )
+        logger.info(f"Successfully created/updated CloudWatch dashboard: {dashboard_name}")
+    except Exception as e:
+        logger.error(f"Error creating/updating CloudWatch dashboard: {e}")
+
+# Main Lambda handler function
+def lambda_handler(event, context):
+    # Fetch all existing entries in DynamoDB
+    dynamodb_entries = get_all_dynamodb_entries()
+
+    # Create a dictionary to count resources by service and hold dynamic metrics and log group data
+    resource_counts = {}
+    metrics_data = {}
+    logs_data = {}
+
+    for entry in dynamodb_entries:
+        resource_id = entry['ResourceID']['S']
+        resource_type = entry['ResourceType']['S']
+        resource_name = entry.get('ResourceName', {}).get('S', resource_id)  # Use ResourceName if available, otherwise ResourceID
+        metric_name = entry['MetricName']['S']
+        namespace = entry['Namespace']['S']
+
+        # Count resources by service type
+        resource_counts[resource_type] = resource_counts.get(resource_type, 0) + 1
+
+        # Add dynamic metrics for the service
+        if resource_type not in metrics_data:
+            metrics_data[resource_type] = []
+        metrics_data[resource_type].append([namespace, metric_name, "ResourceID", resource_id])
+
+        # Dynamically generate log group names based on resource type and name
+        log_group_name = generate_log_group_name(resource_type, resource_name)
+        logs_data[resource_type] = log_group_name
+
+    # Create/Update CloudWatch Dashboard with dynamic metrics and logs
+    create_dashboard(resource_counts, metrics_data, logs_data)
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps('CloudWatch Dashboard creation and update completed successfully')
+    }
