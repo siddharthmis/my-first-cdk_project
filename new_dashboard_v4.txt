@@ -89,6 +89,11 @@ def create_resource_summary_widget(resource_data):
         resource_type = resource['ResourceType']['S']
         resource_counts[resource_type] = resource_counts.get(resource_type, 0) + 1
 
+    # Dynamically create a pie chart based on the resource counts
+    metrics = []
+    for resource_type, count in resource_counts.items():
+        metrics.append(["AWS/Service", "ResourceCount", "Service", resource_type])
+
     widget = {
         "type": "metric",
         "x": 0,
@@ -96,10 +101,7 @@ def create_resource_summary_widget(resource_data):
         "width": 24,
         "height": 6,
         "properties": {
-            "metrics": [
-                ["AWS/Service", "ResourceCount", "Service", resource_type]
-                for resource_type in resource_counts
-            ],
+            "metrics": metrics,
             "view": "pie",  # Use pie chart view for resource summary
             "region": "us-east-1",
             "title": "Resource Summary by Type",
@@ -110,6 +112,17 @@ def create_resource_summary_widget(resource_data):
 
 # Function to create Top N Resources widget (Bar chart for highest CPU utilization, for example)
 def create_top_n_resources_widget(resource_data, metric_name="CPUUtilization", n=5):
+    metrics = []
+    for resource in resource_data[:n]:
+        resource_type = resource['ResourceType']['S']
+        resource_id = resource['ResourceID']['S']
+
+        # Get correct dimension name for the resource type
+        dimension_name, namespace = dimension_name_map.get(resource_type, ('ResourceID', 'AWS/Unknown'))
+
+        # Append the metric for each resource in the top N list
+        metrics.append([namespace, metric_name, dimension_name, resource_id])
+
     widget = {
         "type": "metric",
         "x": 0,
@@ -117,10 +130,7 @@ def create_top_n_resources_widget(resource_data, metric_name="CPUUtilization", n
         "width": 24,
         "height": 6,
         "properties": {
-            "metrics": [
-                ["AWS/EC2", metric_name, dimension_name_map['EC2'][0], resource['ResourceID']['S']]
-                for resource in resource_data[:n]  # Top N resources dynamically fetched
-            ],
+            "metrics": metrics,
             "view": "bar",  # Bar chart for top resources by utilization
             "region": "us-east-1",
             "title": f"Top {n} Resources by {metric_name}",
