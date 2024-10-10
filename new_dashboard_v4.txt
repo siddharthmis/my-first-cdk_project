@@ -1,0 +1,153 @@
+import boto3
+import json
+import logging
+
+# Initialize AWS clients
+dynamodb = boto3.client('dynamodb')
+cloudwatch = boto3.client('cloudwatch')
+logs_client = boto3.client('logs')
+
+# Setup logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Function to get all DynamoDB entries with proper error handling
+def get_all_dynamodb_entries():
+    try:
+        response = dynamodb.scan(TableName='ResourceMetrics')
+        entries = response['Items']
+        logger.info(f"Fetched {len(entries)} entries from DynamoDB.")
+        return entries
+    except Exception as e:
+        logger.error(f"Error fetching entries from DynamoDB: {e}")
+        return []
+
+# Function to dynamically create metric widgets based on DynamoDB data
+def create_metric_widgets(resource_data):
+    widgets = []
+    x, y = 0, 0
+
+    for resource in resource_data:
+        # Dynamically fetch required fields from DynamoDB entry
+        resource_type = resource['ResourceType']['S']
+        resource_id = resource['ResourceID']['S']
+        metric_name = resource['MetricName']['S']
+        namespace = resource['Namespace']['S']
+        period = int(resource.get('Period', {}).get('N', 300))  # Default to 300 seconds if not provided
+        stat = resource.get('Statistic', {}).get('S', 'Average')  # Default to 'Average' if not provided
+
+        # Create a time series metric widget
+        widget = {
+            "type": "metric",
+            "x": x,
+            "y": y,
+            "width": 24,
+            "height": 6,
+            "properties": {
+                "metrics": [
+                    [namespace, metric_name, "ResourceID", resource_id]
+                ],
+                "view": "timeSeries",
+                "region": "us-east-1",
+                "stat": stat,  # Aggregation method dynamically fetched from DynamoDB
+                "period": period,  # Period dynamically fetched from DynamoDB
+                "title": f"{resource_type} - {metric_name} Metric"
+            }
+        }
+        widgets.append(widget)
+        y += 6  # Adjust the y position for the next widget
+
+    return widgets
+
+# Function to create a resource summary widget (Pie chart)
+def create_resource_summary_widget(resource_data):
+    resource_counts = {}
+    for resource in resource_data:
+        resource_type = resource['ResourceType']['S']
+        resource_counts[resource_type] = resource_counts.get(resource_type, 0) + 1
+
+    widget = {
+        "type": "metric",
+        "x": 0,
+        "y": 0,
+        "width": 24,
+        "height": 6,
+        "properties": {
+            "metrics": [
+                ["AWS/Service", "ResourceCount", "Service", resource_type]
+                for resource_type in resource_counts
+            ],
+            "view": "pie",  # Use pie chart view for resource summary
+            "region": "us-east-1",
+            "title": "Resource Summary by Type",
+            "stat": "Sum"
+        }
+    }
+    return widget
+
+# Function to create Top N Resources widget (Bar chart for highest CPU utilization, for example)
+def create_top_n_resources_widget(resource_data, metric_name="CPUUtilization", n=5):
+    widget = {
+        "type": "metric",
+        "x": 0,
+        "y": 0,
+        "width": 24,
+        "height": 6,
+        "properties": {
+            "metrics": [
+                ["AWS/EC2", metric_name, "ResourceID", resource['ResourceID']['S']]
+                for resource in resource_data[:n]  # Top N resources dynamically fetched
+            ],
+            "view": "bar",  # Bar chart for top resources by utilization
+            "region": "us-east-1",
+            "title": f"Top {n} Resources by {metric_name}",
+            "stat": "Average",
+            "period": 300
+        }
+    }
+    return widget
+
+# Main Lambda handler function
+def lambda_handler(event, context):
+    try:
+        # Fetch all existing entries in DynamoDB
+        dynamodb_entries = get_all_dynamodb_entries()
+
+        # Initialize data structures
+        widgets = []
+
+        # Create metric widgets based on DynamoDB data
+        metric_widgets = create_metric_widgets(dynamodb_entries)
+        widgets.extend(metric_widgets)
+
+        # Create resource summary widget (Pie chart)
+        resource_summary_widget = create_resource_summary_widget(dynamodb_entries)
+        widgets.append(resource_summary_widget)
+
+        # Create Top N resources widget (Bar chart)
+        top_n_resources_widget = create_top_n_resources_widget(dynamodb_entries, "CPUUtilization", 5)
+        widgets.append(top_n_resources_widget)
+
+        # Create the dashboard body with all widgets
+        dashboard_body = {"widgets": widgets}
+
+        # Log the final dashboard body for debugging
+        logger.info(f"Final dashboard body: {json.dumps(dashboard_body, indent=2)}")
+
+        # Create or update the CloudWatch dashboard
+        response = cloudwatch.put_dashboard(
+            DashboardName="DynamicResourceDashboard",
+            DashboardBody=json.dumps(dashboard_body)
+        )
+
+        # Log the CloudWatch response to capture any errors
+        logger.info(f"CloudWatch response: {json.dumps(response, indent=2)}")
+        logger.info("Successfully created/updated CloudWatch dashboard with dynamic widgets.")
+
+    except Exception as e:
+        logger.error(f"Lambda execution failed: {e}")
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps('CloudWatch Dashboard creation and update completed successfully.')
+    }
