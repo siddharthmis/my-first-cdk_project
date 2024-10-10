@@ -76,8 +76,8 @@ def create_resource_summary_widgets(resource_counts):
                 "view": "singleValue",
                 "region": "us-east-1",
                 "title": f"{resource_type} Resource Count",
-                "stat": "Sum",  
-                "period": 300  # Use a valid period for single value metrics
+                "stat": "Sum",
+                "period": 300  # Ensure valid period for single value metrics
             }
         }
         widgets.append(widget)
@@ -97,14 +97,14 @@ def create_aggregate_metric_widget(metrics_data):
             "height": 6,
             "properties": {
                 "metrics": metric_info['metrics'],  # Define the time series metrics
-                "view": "timeSeries",  # Set the correct view for a time series chart
-                "stat": "Average",  # Use an appropriate aggregation (e.g., Average)
+                "view": "timeSeries",  # Use time series view for historical data
+                "stat": "Average",  # Default stat for time series
                 "region": "us-east-1",
                 "title": f"Average {metric_info['metrics'][0][1]} for {resource_type}",
                 "period": 300,  # Set the time period for data aggregation
                 "yAxis": {
                     "left": {
-                        "min": 0  # Set y-axis minimum value
+                        "min": 0  # Ensure y-axis has a minimum value
                     }
                 }
             }
@@ -125,7 +125,7 @@ def create_top_n_widget(resource_type, metric_name, n=5):
             "query": f"fields @timestamp, @message | filter MetricName = '{metric_name}' "
                      f"| sort @timestamp desc | limit {n}",
             "logGroupNames": [f"/aws/{resource_type.lower()}/*"],  # Ensure valid log group names
-            "view": "table",  # Use "table" for displaying log data
+            "view": "table",  # Use table view for log query results
             "region": "us-east-1",
             "title": f"Top {n} {resource_type} Resources by {metric_name}"
         }
@@ -152,7 +152,7 @@ def create_status_summary_widget(resource_counts, unhealthy_counts):
                 "region": "us-east-1",
                 "title": f"{resource_type} - Healthy: {healthy}, Unhealthy: {unhealthy}",
                 "stat": "Sum",  # Use Sum as the aggregation type
-                "period": 300  # Set the period for this metric
+                "period": 300  # Ensure valid period for single value metrics
             }
         }
         widgets.append(widget)
@@ -173,10 +173,10 @@ def create_anomaly_detection_widget(metrics_data):
             "properties": {
                 "metrics": metric_info['metrics'],
                 "view": "timeSeries",
-                "stat": "Average",  # Use average for anomaly detection metrics
+                "stat": "Average",  # Default stat for anomaly detection
                 "region": "us-east-1",
                 "title": f"Anomaly Detection for {resource_type}",
-                "period": 300,
+                "period": 300,  # Ensure valid period for time series metrics
                 "annotations": {
                     "horizontal": [
                         {
@@ -189,7 +189,7 @@ def create_anomaly_detection_widget(metrics_data):
                 },
                 "yAxis": {
                     "left": {
-                        "min": 0  # Ensure proper y-axis min for time series
+                        "min": 0  # Ensure y-axis has a minimum value
                     }
                 }
             }
