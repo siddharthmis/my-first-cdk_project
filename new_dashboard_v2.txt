@@ -73,10 +73,11 @@ def create_resource_summary_widgets(resource_counts):
             "height": 6,
             "properties": {
                 "metrics": [["AWS/Service", "ResourceCount", "Service", resource_type]],
-                "view": "singleValue",  # "singleValue" to display a single value, not a time series
+                "view": "singleValue",
                 "region": "us-east-1",
                 "title": f"{resource_type} Resource Count",
-                "stat": "Sum"  # Stat to summarize the metric
+                "stat": "Sum",
+                "period": 300  # Ensure proper period for single value metrics
             }
         }
         widgets.append(widget)
@@ -95,12 +96,17 @@ def create_aggregate_metric_widget(metrics_data):
             "width": 24,
             "height": 6,
             "properties": {
-                "metrics": metric_info['metrics'],  # Time series metrics data
-                "view": "timeSeries",  # Show data as a time series chart
-                "stat": "Average",  # Use average for time series
+                "metrics": metric_info['metrics'],
+                "view": "timeSeries",
+                "stat": "Average",
                 "region": "us-east-1",
                 "title": f"Average {metric_info['metrics'][0][1]} for {resource_type}",
-                "period": 300  # Time period in seconds
+                "period": 300,
+                "yAxis": {
+                    "left": {
+                        "min": 0
+                    }
+                }
             }
         }
         widgets.append(widget)
@@ -110,23 +116,23 @@ def create_aggregate_metric_widget(metrics_data):
 # Widget 19 and 20: Top N Resources using Log Insights
 def create_top_n_widget(resource_type, metric_name, n=5):
     widget = {
-        "type": "log",  # Log widget for querying CloudWatch Logs Insights
+        "type": "log",
         "x": 0,
         "y": 0,
         "width": 24,
         "height": 6,
         "properties": {
             "query": f"fields @timestamp, @message | filter MetricName = '{metric_name}' "
-                     f"| sort @timestamp desc | limit {n}",  # Log Insights query
-            "logGroupNames": [f"/aws/{resource_type.lower()}/*"],  # Log group names to query
-            "view": "table",  # Log widget view type is "table"
-            "region": "us-east-1",  # AWS region
+                     f"| sort @timestamp desc | limit {n}",
+            "logGroupNames": [f"/aws/{resource_type.lower()}/*"],
+            "view": "table",
+            "region": "us-east-1",
             "title": f"Top {n} {resource_type} Resources by {metric_name}"
         }
     }
     return widget
 
-# Widget for Status Summary (assuming widget 21)
+# Widget for Status Summary
 def create_status_summary_widget(resource_counts, unhealthy_counts):
     widgets = []
     x, y = 0, 0
@@ -142,17 +148,18 @@ def create_status_summary_widget(resource_counts, unhealthy_counts):
             "properties": {
                 "metrics": [["AWS/Service", "HealthyCount", "Service", resource_type],
                             ["AWS/Service", "UnhealthyCount", "Service", resource_type]],
-                "view": "singleValue",  # Single value view for healthy/unhealthy status
+                "view": "singleValue",
                 "region": "us-east-1",
                 "title": f"{resource_type} - Healthy: {healthy}, Unhealthy: {unhealthy}",
-                "stat": "Sum"
+                "stat": "Sum",
+                "period": 300
             }
         }
         widgets.append(widget)
         y += 6
     return widgets
 
-# Widget for Anomaly Detection (assuming widget 22)
+# Widget for Anomaly Detection
 def create_anomaly_detection_widget(metrics_data):
     widgets = []
     x, y = 0, 0
@@ -165,7 +172,7 @@ def create_anomaly_detection_widget(metrics_data):
             "height": 6,
             "properties": {
                 "metrics": metric_info['metrics'],
-                "view": "timeSeries",  # Time series chart for anomaly detection
+                "view": "timeSeries",
                 "stat": "Average",
                 "region": "us-east-1",
                 "title": f"Anomaly Detection for {resource_type}",
@@ -176,9 +183,14 @@ def create_anomaly_detection_widget(metrics_data):
                             "label": "Anomaly Detection",
                             "fill": "below",
                             "color": "#ff0000",
-                            "anomalyDetection": True  # Enable anomaly detection
+                            "anomalyDetection": True
                         }
                     ]
+                },
+                "yAxis": {
+                    "left": {
+                        "min": 0
+                    }
                 }
             }
         }
@@ -230,8 +242,8 @@ def lambda_handler(event, context):
         widgets.extend(create_resource_summary_widgets(resource_counts))  # Widgets 16 & 17
         widgets.extend(create_aggregate_metric_widget(metrics_data))      # Widget 18
         widgets.append(create_top_n_widget("EC2", "CPUUtilization", 5))   # Widgets 19 & 20
-        widgets.extend(create_status_summary_widget(resource_counts, unhealthy_counts))  # Widget 21 (Status Summary)
-        widgets.extend(create_anomaly_detection_widget(metrics_data))     # Widget 22 (Anomaly Detection)
+        widgets.extend(create_status_summary_widget(resource_counts, unhealthy_counts))  # Status Summary
+        widgets.extend(create_anomaly_detection_widget(metrics_data))     # Anomaly Detection
 
         # Create the dashboard body with widgets
         dashboard_body = {"widgets": widgets}
