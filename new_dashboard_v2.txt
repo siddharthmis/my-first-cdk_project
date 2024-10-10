@@ -61,7 +61,7 @@ def lookup_log_groups(resource_name):
         logger.error(f"Error looking up log groups for {resource_name}: {e}")
         return ["/aws/default-log-group"]
 
-# Widget for Resource Summary
+# Widget for Resource Summary (Widgets 16 & 17)
 def create_resource_summary_widgets(resource_counts):
     widgets = []
     x, y = 0, 0
@@ -84,7 +84,7 @@ def create_resource_summary_widgets(resource_counts):
         y += 6
     return widgets
 
-# Widget for Aggregate Metrics
+# Widget for Aggregate Metrics (Widget 18)
 def create_aggregate_metric_widget(metrics_data):
     widgets = []
     x, y = 0, 0
@@ -109,7 +109,7 @@ def create_aggregate_metric_widget(metrics_data):
         y += 6
     return widgets
 
-# Corrected Widget for Top N Resources using Log Insights
+# Corrected Widget for Top N Resources using Log Insights (Widgets 19 & 20)
 def create_top_n_widget(resource_type, metric_name, n=5):
     widget = {
         "type": "log",
@@ -118,7 +118,7 @@ def create_top_n_widget(resource_type, metric_name, n=5):
         "width": 24,
         "height": 6,
         "properties": {
-            "queryString": f"fields @timestamp, @message | filter MetricName = '{metric_name}' "
+            "query": f"fields @timestamp, @message | filter MetricName = '{metric_name}' "
                            f"| sort @timestamp desc | limit {n}",
             "logGroupNames": [f"/aws/{resource_type.lower()}/*"],  # Ensure valid log group names
             "view": "table",  # View type should be "table" for Logs Insights
@@ -128,7 +128,7 @@ def create_top_n_widget(resource_type, metric_name, n=5):
     }
     return widget
 
-# Widget for Status Summary
+# Widget for Status Summary (Assumed Widget 21)
 def create_status_summary_widget(resource_counts, unhealthy_counts):
     widgets = []
     x, y = 0, 0
@@ -154,7 +154,7 @@ def create_status_summary_widget(resource_counts, unhealthy_counts):
         y += 6
     return widgets
 
-# Widget for Anomaly Detection
+# Widget for Anomaly Detection (Assumed Widget 22)
 def create_anomaly_detection_widget(metrics_data):
     widgets = []
     x, y = 0, 0
