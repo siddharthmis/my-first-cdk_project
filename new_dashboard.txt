@@ -134,3 +134,235 @@ def lambda_handler(event, context):
         'statusCode': 200,
         'body': json.dumps('CloudWatch Dashboard creation and update completed successfully')
     }
+
+
+
+#################################################################################################
+
+
+
+import boto3
+import json
+import logging
+
+# Initialize AWS clients
+dynamodb = boto3.client('dynamodb')
+cloudwatch = boto3.client('cloudwatch')
+
+# Setup logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Function to get all DynamoDB entries with proper error handling
+def get_all_dynamodb_entries():
+    try:
+        response = dynamodb.scan(TableName='ResourceMetrics')
+        entries = response['Items']
+        logger.info(f"Fetched {len(entries)} entries from DynamoDB.")
+        return entries
+    except Exception as e:
+        logger.error(f"Error fetching entries from DynamoDB: {e}")
+        return []
+
+# Function to generate a dynamic log group name based on resource type and name
+def generate_log_group_name(resource_type, resource_name):
+    try:
+        log_group_name = f"/aws/{resource_type.lower()}/{resource_name}"
+        logger.info(f"Generated log group name: {log_group_name} for resource: {resource_name}")
+        return log_group_name
+    except Exception as e:
+        logger.error(f"Error generating log group name for {resource_type}, {resource_name}: {e}")
+        return None
+
+# Widget for Resource Summary
+def create_resource_summary_widgets(resource_counts):
+    widgets = []
+    x, y = 0, 0
+    for resource_type, count in resource_counts.items():
+        widget = {
+            "type": "metric",
+            "x": x,
+            "y": y,
+            "width": 12,
+            "height": 6,
+            "properties": {
+                "metrics": [["CustomNamespace", "ResourceCount", "Service", resource_type]],
+                "view": "singleValue",
+                "region": "us-east-1",
+                "title": f"{resource_type} Resource Count: {count}",
+                "stat": "Sum"
+            }
+        }
+        widgets.append(widget)
+        y += 6
+    return widgets
+
+# Widget for Aggregate Metrics
+def create_aggregate_metric_widget(metrics_data):
+    widgets = []
+    x, y = 0, 0
+    for resource_type, metric_info in metrics_data.items():
+        widget = {
+            "type": "metric",
+            "x": x,
+            "y": y,
+            "width": 24,
+            "height": 6,
+            "properties": {
+                "metrics": metric_info['metrics'],
+                "view": "timeSeries",
+                "stat": "Average",
+                "region": "us-east-1",
+                "title": f"Average {metric_info['metrics'][0][1]} for {resource_type}",
+                "period": 300,
+                "liveData": True
+            }
+        }
+        widgets.append(widget)
+        y += 6
+    return widgets
+
+# Widget for Top N Resources
+def create_top_n_widget(resource_type, metric_name, n=5):
+    widget = {
+        "type": "log",
+        "x": 0,
+        "y": 0,
+        "width": 24,
+        "height": 6,
+        "properties": {
+            "queryString": f"fields @timestamp, @message | filter MetricName = '{metric_name}' "
+                           f"| sort by @message desc | limit {n}",
+            "logGroupNames": [f"/aws/{resource_type.lower()}/*"],
+            "view": "table",
+            "region": "us-east-1",
+            "title": f"Top {n} {resource_type} Resources by {metric_name}"
+        }
+    }
+    return widget
+
+# Widget for Status Summary
+def create_status_summary_widget(resource_counts, unhealthy_counts):
+    widgets = []
+    x, y = 0, 0
+    for resource_type, count in resource_counts.items():
+        unhealthy = unhealthy_counts.get(resource_type, 0)
+        healthy = count - unhealthy
+        widget = {
+            "type": "metric",
+            "x": x,
+            "y": y,
+            "width": 12,
+            "height": 6,
+            "properties": {
+                "metrics": [["CustomNamespace", "HealthyCount", "Service", resource_type],
+                            ["CustomNamespace", "UnhealthyCount", "Service", resource_type]],
+                "view": "singleValue",
+                "region": "us-east-1",
+                "title": f"{resource_type} - Healthy: {healthy}, Unhealthy: {unhealthy}",
+                "stat": "Sum"
+            }
+        }
+        widgets.append(widget)
+        y += 6
+    return widgets
+
+# Widget for Anomaly Detection
+def create_anomaly_detection_widget(metrics_data):
+    widgets = []
+    x, y = 0, 0
+    for resource_type, metric_info in metrics_data.items():
+        widget = {
+            "type": "metric",
+            "x": x,
+            "y": y,
+            "width": 24,
+            "height": 6,
+            "properties": {
+                "metrics": metric_info['metrics'],
+                "view": "timeSeries",
+                "stat": "Average",
+                "region": "us-east-1",
+                "title": f"Anomaly Detection for {resource_type}",
+                "period": 300,
+                "liveData": True,
+                "annotations": {
+                    "horizontal": [
+                        {
+                            "label": "Anomaly Detection",
+                            "fill": "below",
+                            "color": "#ff0000",
+                            "anomalyDetection": True  # Enable anomaly detection
+                        }
+                    ]
+                }
+            }
+        }
+        widgets.append(widget)
+        y += 6
+    return widgets
+
+# Main Lambda handler function
+def lambda_handler(event, context):
+    try:
+        # Fetch all existing entries in DynamoDB
+        dynamodb_entries = get_all_dynamodb_entries()
+
+        # Initialize data structures
+        resource_counts = {}
+        metrics_data = {}
+        logs_data = {}
+        unhealthy_counts = {}  # Simulating unhealthy resource counts, you can populate it based on real data
+
+        # Process each entry in DynamoDB
+        for entry in dynamodb_entries:
+            try:
+                resource_id = entry['ResourceID']['S']
+                resource_type = entry['ResourceType']['S']
+                resource_name = entry.get('ResourceName', {}).get('S', resource_id)
+                metric_name = entry['MetricName']['S']
+                namespace = entry['Namespace']['S']
+                statistic = entry.get('Statistic', {}).get('S', "Average")
+                threshold = float(entry.get('Threshold', {}).get('N', "80"))
+
+                # Update resource counts
+                resource_counts[resource_type] = resource_counts.get(resource_type, 0) + 1
+
+                # Collect metrics for aggregate widget
+                if resource_type not in metrics_data:
+                    metrics_data[resource_type] = {'metrics': [], 'stat': statistic, 'threshold': threshold}
+                metrics_data[resource_type]['metrics'].append([namespace, metric_name, "ResourceID", resource_id])
+
+                # Generate log group name dynamically
+                log_group_name = generate_log_group_name(resource_type, resource_name)
+                if log_group_name:
+                    logs_data[resource_type] = log_group_name
+
+            except Exception as e:
+                logger.error(f"Error processing DynamoDB entry: {e}")
+
+        # Create widgets
+        widgets = []
+        widgets.extend(create_resource_summary_widgets(resource_counts))  # Resource Summary
+        widgets.extend(create_aggregate_metric_widget(metrics_data))      # Aggregate Metrics
+        widgets.append(create_top_n_widget("EC2", "CPUUtilization", 5))   # Top N Resources (example for EC2)
+        widgets.extend(create_status_summary_widget(resource_counts, unhealthy_counts))  # Status Summary
+        widgets.extend(create_anomaly_detection_widget(metrics_data))     # Anomaly Detection
+
+        # Create the dashboard body with widgets
+        dashboard_body = {"widgets": widgets}
+
+        # Create or update the CloudWatch dashboard
+        cloudwatch.put_dashboard(
+            DashboardName="DynamicResourceDashboard",
+            DashboardBody=json.dumps(dashboard_body)
+        )
+        logger.info("Successfully created/updated CloudWatch dashboard.")
+
+    except Exception as e:
+        logger.error(f"Lambda execution failed: {e}")
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps('CloudWatch Dashboard creation and update completed successfully')
+    }
