@@ -46,20 +46,47 @@ def create_metric_widgets(resource_data):
     widgets = []
     x, y = 0, 0
 
+    # Dictionary to store metrics by resource type and metric
+    metrics_by_type = {}
+
     for resource in resource_data:
-        # Dynamically fetch required fields from DynamoDB entry
-        resource_type = resource['ResourceType']['S']
-        resource_id = resource['ResourceID']['S']
-        metric_name = resource['MetricName']['S']
-        
-        # Get the correct dimension name and namespace based on resource type
-        dimension_name, namespace = dimension_name_map.get(resource_type, ('ResourceID', 'AWS/Unknown'))
+        try:
+            # Dynamically fetch required fields from DynamoDB entry
+            resource_type = resource['ResourceType']['S']
+            resource_id = resource['ResourceID']['S']
+            metric_name = resource['MetricName']['S']
 
-        # Dynamically fetch period and stat
-        period = int(resource.get('Period', {}).get('N', 300))  # Default to 300 seconds if not provided
-        stat = resource.get('Statistic', {}).get('S', 'Average')  # Default to 'Average' if not provided
+            # Get the correct dimension name and namespace based on resource type
+            dimension_name, namespace = dimension_name_map.get(resource_type, ('ResourceID', 'AWS/Unknown'))
 
-        # Create a time series metric widget
+            # Dynamically fetch period and stat
+            period = int(resource.get('Period', {}).get('N', 300))  # Default to 300 seconds if not provided
+            stat = resource.get('Statistic', {}).get('S', 'Average')  # Default to 'Average' if not provided
+
+            # Key to group metrics by resource type and metric
+            key = f"{resource_type}-{metric_name}"
+
+            # Add the metric for the resource under the correct group (key)
+            if key not in metrics_by_type:
+                metrics_by_type[key] = {
+                    'namespace': namespace,
+                    'dimension_name': dimension_name,
+                    'metrics': [],
+                    'period': period,
+                    'stat': stat,
+                    'title': f"{resource_type} - {metric_name}"
+                }
+            
+            # Append this resource's metric to the group
+            metrics_by_type[key]['metrics'].append([namespace, metric_name, dimension_name, resource_id])
+
+        except KeyError as e:
+            logger.error(f"KeyError: Missing field {e} for resource {resource}")
+        except Exception as e:
+            logger.error(f"Error processing resource {resource}: {e}")
+
+    # Now create widgets for each grouped resource type and metric
+    for key, data in metrics_by_type.items():
         widget = {
             "type": "metric",
             "x": x,
@@ -67,16 +94,15 @@ def create_metric_widgets(resource_data):
             "width": 24,
             "height": 6,
             "properties": {
-                "metrics": [
-                    [namespace, metric_name, dimension_name, resource_id]
-                ],
+                "metrics": data['metrics'],  # All metrics for this resource type and metric
                 "view": "timeSeries",
                 "region": "us-east-1",
-                "stat": stat,  # Aggregation method dynamically fetched from DynamoDB
-                "period": period,  # Period dynamically fetched from DynamoDB
-                "title": f"{resource_type} - {metric_name} Metric"
+                "stat": data['stat'],  # Aggregation method dynamically fetched from DynamoDB
+                "period": data['period'],  # Period dynamically fetched from DynamoDB
+                "title": data['title']
             }
         }
+        logger.info(f"Created widget for {key}: {json.dumps(widget, indent=2)}")
         widgets.append(widget)
         y += 6  # Adjust the y position for the next widget
 
@@ -88,6 +114,9 @@ def create_resource_summary_widget(resource_data):
     for resource in resource_data:
         resource_type = resource['ResourceType']['S']
         resource_counts[resource_type] = resource_counts.get(resource_type, 0) + 1
+
+    # Log resource counts for debugging
+    logger.info(f"Resource counts: {json.dumps(resource_counts, indent=2)}")
 
     # Dynamically create a pie chart based on the resource counts
     metrics = []
@@ -108,36 +137,7 @@ def create_resource_summary_widget(resource_data):
             "stat": "Sum"
         }
     }
-    return widget
-
-# Function to create Top N Resources widget (Bar chart for highest CPU utilization, for example)
-def create_top_n_resources_widget(resource_data, metric_name="CPUUtilization", n=5):
-    metrics = []
-    for resource in resource_data[:n]:
-        resource_type = resource['ResourceType']['S']
-        resource_id = resource['ResourceID']['S']
-
-        # Get correct dimension name for the resource type
-        dimension_name, namespace = dimension_name_map.get(resource_type, ('ResourceID', 'AWS/Unknown'))
-
-        # Append the metric for each resource in the top N list
-        metrics.append([namespace, metric_name, dimension_name, resource_id])
-
-    widget = {
-        "type": "metric",
-        "x": 0,
-        "y": 0,
-        "width": 24,
-        "height": 6,
-        "properties": {
-            "metrics": metrics,
-            "view": "bar",  # Bar chart for top resources by utilization
-            "region": "us-east-1",
-            "title": f"Top {n} Resources by {metric_name}",
-            "stat": "Average",
-            "period": 300
-        }
-    }
+    logger.info(f"Created resource summary widget: {json.dumps(widget, indent=2)}")
     return widget
 
 # Main Lambda handler function
@@ -156,10 +156,6 @@ def lambda_handler(event, context):
         # Create resource summary widget (Pie chart)
         resource_summary_widget = create_resource_summary_widget(dynamodb_entries)
         widgets.append(resource_summary_widget)
-
-        # Create Top N resources widget (Bar chart)
-        top_n_resources_widget = create_top_n_resources_widget(dynamodb_entries, "CPUUtilization", 5)
-        widgets.append(top_n_resources_widget)
 
         # Create the dashboard body with all widgets
         dashboard_body = {"widgets": widgets}
