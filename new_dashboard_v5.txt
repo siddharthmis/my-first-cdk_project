@@ -40,45 +40,13 @@ def get_all_dynamodb_entries():
         logger.error(f"Error fetching entries from DynamoDB: {e}")
         return []
 
-# Function to look up log groups with pagination and filtering within the /aws/ prefix
-def lookup_log_groups(resource_name):
-    try:
-        log_group_prefix = "/aws/"
-        found_log_groups = []
-        next_token = None
+# Function to build metrics widget properties
+def build_metric_widget(resource_type, metric_name, dimension_name, resource_id, namespace, period, stat):
+    return [
+        namespace, metric_name, dimension_name, resource_id
+    ]
 
-        # Paginate through log groups to find all matches
-        while True:
-            if next_token:
-                response = logs_client.describe_log_groups(logGroupNamePrefix=log_group_prefix, nextToken=next_token)
-            else:
-                response = logs_client.describe_log_groups(logGroupNamePrefix=log_group_prefix)
-            
-            log_groups = response.get('logGroups', [])
-            next_token = response.get('nextToken', None)
-
-            # Search for any log group that contains the resource name
-            for log_group in log_groups:
-                log_group_name = log_group['logGroupName']
-                if resource_name in log_group_name:
-                    logger.info(f"Found log group: {log_group_name} for resource: {resource_name}")
-                    found_log_groups.append(log_group_name)
-
-            if not next_token:
-                break  # Exit the loop if no more log groups to search
-
-        # If we found matches, return the list; otherwise, return the default log group
-        if found_log_groups:
-            return found_log_groups
-        else:
-            logger.warning(f"No log group found for resource: {resource_name}. Using default log group.")
-            return ["/aws/default-log-group"]
-
-    except Exception as e:
-        logger.error(f"Error looking up log groups for {resource_name}: {e}")
-        return ["/aws/default-log-group"]
-
-# Widget 16 & 17: Resource Summary
+# Function to create resource summary widgets (Widgets 16 & 17)
 def create_resource_summary_widgets(resource_counts):
     widgets = []
     x, y = 0, 0
@@ -95,7 +63,7 @@ def create_resource_summary_widgets(resource_counts):
                 "region": "us-east-1",
                 "title": f"{resource_type} Resource Count",
                 "stat": "Sum",
-                "period": 300  # Ensure valid period for single value metrics
+                "period": 300
             }
         }
         logger.info(f"Created resource summary widget: {json.dumps(widget)}")
@@ -103,7 +71,7 @@ def create_resource_summary_widgets(resource_counts):
         y += 6
     return widgets
 
-# Widget 18: Aggregate Metrics
+# Function to create aggregate metric widgets (Widget 18)
 def create_aggregate_metric_widget(metrics_data):
     widgets = []
     x, y = 0, 0
@@ -115,15 +83,15 @@ def create_aggregate_metric_widget(metrics_data):
             "width": 24,
             "height": 6,
             "properties": {
-                "metrics": metric_info['metrics'],  # Define the time series metrics
-                "view": "timeSeries",  # Use time series view for historical data
-                "stat": "Average",  # Default stat for time series
+                "metrics": metric_info['metrics'],  # List of all metrics for this resource type
+                "view": "timeSeries",
+                "stat": "Average",
                 "region": "us-east-1",
                 "title": f"Average {metric_info['metrics'][0][1]} for {resource_type}",
-                "period": 300,  # Set the time period for data aggregation
+                "period": 300,
                 "yAxis": {
                     "left": {
-                        "min": 0  # Ensure y-axis has a minimum value
+                        "min": 0
                     }
                 }
             }
@@ -133,7 +101,7 @@ def create_aggregate_metric_widget(metrics_data):
         y += 6
     return widgets
 
-# Widget 19 & 20: Top N Resources using Log Insights
+# Function to create Top N resources widgets (Widget 19 & 20)
 def create_top_n_widget(resource_type, metric_name, n=5):
     widget = {
         "type": "log",
@@ -144,8 +112,8 @@ def create_top_n_widget(resource_type, metric_name, n=5):
         "properties": {
             "query": f"fields @timestamp, @message | filter MetricName = '{metric_name}' "
                      f"| sort @timestamp desc | limit {n}",
-            "logGroupNames": [f"/aws/{resource_type.lower()}/*"],  # Ensure valid log group names
-            "view": "table",  # Use table view for log query results
+            "logGroupNames": [f"/aws/{resource_type.lower()}/*"],
+            "view": "table",
             "region": "us-east-1",
             "title": f"Top {n} {resource_type} Resources by {metric_name}"
         }
@@ -153,7 +121,7 @@ def create_top_n_widget(resource_type, metric_name, n=5):
     logger.info(f"Created log query widget: {json.dumps(widget)}")
     return widget
 
-# Widget 21: Status Summary
+# Function to create status summary widget (Widget 21)
 def create_status_summary_widget(resource_counts, unhealthy_counts):
     widgets = []
     x, y = 0, 0
@@ -169,11 +137,11 @@ def create_status_summary_widget(resource_counts, unhealthy_counts):
             "properties": {
                 "metrics": [["AWS/Service", "HealthyCount", "Service", resource_type],
                             ["AWS/Service", "UnhealthyCount", "Service", resource_type]],
-                "view": "singleValue",  # Single value for healthy/unhealthy status
+                "view": "singleValue",
                 "region": "us-east-1",
                 "title": f"{resource_type} - Healthy: {healthy}, Unhealthy: {unhealthy}",
-                "stat": "Sum",  # Use Sum as the aggregation type
-                "period": 300  # Ensure valid period for single value metrics
+                "stat": "Sum",
+                "period": 300
             }
         }
         logger.info(f"Created status summary widget: {json.dumps(widget)}")
@@ -181,7 +149,7 @@ def create_status_summary_widget(resource_counts, unhealthy_counts):
         y += 6
     return widgets
 
-# Widget 22: Anomaly Detection
+# Function to create anomaly detection widgets (Widget 22)
 def create_anomaly_detection_widget(metrics_data):
     widgets = []
     x, y = 0, 0
@@ -195,23 +163,23 @@ def create_anomaly_detection_widget(metrics_data):
             "properties": {
                 "metrics": metric_info['metrics'],
                 "view": "timeSeries",
-                "stat": "Average",  # Default stat for anomaly detection
+                "stat": "Average",
                 "region": "us-east-1",
                 "title": f"Anomaly Detection for {resource_type}",
-                "period": 300,  # Ensure valid period for time series metrics
+                "period": 300,
                 "annotations": {
                     "horizontal": [
                         {
                             "label": "Anomaly Detection",
                             "fill": "below",
                             "color": "#ff0000",
-                            "anomalyDetection": True  # Enable anomaly detection
+                            "anomalyDetection": True
                         }
                     ]
                 },
                 "yAxis": {
                     "left": {
-                        "min": 0  # Ensure y-axis has a minimum value
+                        "min": 0
                     }
                 }
             }
@@ -250,8 +218,12 @@ def lambda_handler(event, context):
                 # Collect metrics for aggregate widget
                 if resource_type not in metrics_data:
                     metrics_data[resource_type] = {'metrics': [], 'stat': statistic, 'threshold': threshold}
+                
+                # Fetch the correct dimension name from the mapping
                 dimension_name = dimension_name_map.get(resource_type, "ResourceID")
-                metrics_data[resource_type]['metrics'].append([namespace, metric_name, dimension_name, resource_id])
+                
+                # Append the metric to metrics_data for this resource
+                metrics_data[resource_type]['metrics'].append(build_metric_widget(resource_type, metric_name, dimension_name, resource_id, namespace, 300, statistic))
 
                 # Look up log groups based on resource name
                 log_group_names = lookup_log_groups(resource_name)
