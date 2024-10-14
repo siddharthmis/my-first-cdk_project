@@ -1,0 +1,275 @@
+import boto3
+import json
+import logging
+
+# Initialize AWS clients
+dynamodb = boto3.client('dynamodb')
+cloudwatch = boto3.client('cloudwatch')
+
+# Setup logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Dictionary to map resource types to correct dimension names and namespace
+resource_namespace_map = {
+    'EC2': ('AWS/EC2', ['InstanceId']),
+    'RDS': ('AWS/RDS', ['DBInstanceIdentifier']),
+    'ALB': ('AWS/ApplicationELB', ['LoadBalancer']),
+    'ALBTarget': ('AWS/ApplicationELB', ['TargetGroup', 'LoadBalancer']),
+    'Lambda': ('AWS/Lambda', ['FunctionName']),
+    'Elasticache': ('AWS/ElastiCache', ['CacheClusterId', 'CacheNodeId']),
+    'Redshift': ('AWS/Redshift', ['ClusterIdentifier']),
+    'FSx': ('AWS/FSx', ['FileSystemId']),
+    'Macie': ('AWS/Macie', ['MemberAccountId']),
+    'Neptune': ('AWS/Neptune', ['DBInstanceIdentifier']),
+    'Opensearch': ('AWS/ES', ['DomainName']),
+    'Outposts': ('AWS/Outposts', ['OutpostId']),
+    'Aurora': ('AWS/RDS', ['DBClusterIdentifier']),
+    'Backup': ('AWS/Backup', ['ResourceArn']),
+}
+
+# Function to get all DynamoDB entries with proper error handling
+def get_all_dynamodb_entries():
+    try:
+        response = dynamodb.scan(TableName='ResourceMetrics')
+        entries = response['Items']
+        logger.info(f"Fetched {len(entries)} entries from DynamoDB.")
+        return entries
+    except Exception as e:
+        logger.error(f"Error fetching entries from DynamoDB: {e}")
+        return []
+
+# Function to build metrics widget properties with support for multiple dimensions
+def build_metric_widget(namespace, metric_name, dimension_names, resource_ids, period, stat):
+    metrics = [namespace, metric_name]
+    for dim_name, resource_id in zip(dimension_names, resource_ids):
+        metrics.append(dim_name)
+        metrics.append(resource_id)
+    return metrics
+
+# Function to create CPU Utilization Widgets (for EC2, RDS, etc.)
+def create_cpu_utilization_widgets(metrics_data):
+    widgets = []
+    x, y = 0, 0
+    for resource_type, metric_info in metrics_data.items():
+        cpu_widget = {
+            "type": "metric",
+            "x": x,
+            "y": y,
+            "width": 24,
+            "height": 6,
+            "properties": {
+                "metrics": [
+                    ["AWS/EC2", "CPUUtilization", "InstanceId", metric_info['metrics'][0][3]]
+                ],
+                "view": "timeSeries",
+                "stat": "Average",
+                "region": "us-east-1",
+                "title": f"CPU Utilization for {resource_type}",
+                "period": 300,
+                "yAxis": {
+                    "left": {
+                        "min": 0
+                    }
+                }
+            }
+        }
+        widgets.append(cpu_widget)
+        y += 6
+    return widgets
+
+# Function to create Memory Usage Widgets (for EC2)
+def create_memory_usage_widgets(metrics_data):
+    """Creates memory usage widgets for EC2 instances."""
+    widgets = []
+    x, y = 0, 0
+    for resource_type, metric_info in metrics_data.items():
+        if resource_type == "EC2":
+            mem_widget = {
+                "type": "metric",
+                "x": x,
+                "y": y,
+                "width": 24,
+                "height": 6,
+                "properties": {
+                    "metrics": [
+                        ["CWAgent", "mem_used_percent", "InstanceId", metric_info['metrics'][0][3]]
+                    ],
+                    "view": "timeSeries",
+                    "stat": "Average",
+                    "region": "us-east-1",
+                    "title": f"Memory Usage for {resource_type}",
+                    "period": 300,
+                    "yAxis": {
+                        "left": {
+                            "min": 0
+                        }
+                    }
+                }
+            }
+            widgets.append(mem_widget)
+            y += 6
+    return widgets
+
+# Function to create Disk I/O Widgets
+def create_disk_io_widgets(metrics_data):
+    """Creates widgets for disk I/O performance on EC2 and RDS."""
+    widgets = []
+    x, y = 0, 0
+    for resource_type, metric_info in metrics_data.items():
+        disk_widget = {
+            "type": "metric",
+            "x": x,
+            "y": y,
+            "width": 24,
+            "height": 6,
+            "properties": {
+                "metrics": [
+                    ["AWS/EC2", "DiskReadOps", "InstanceId", metric_info['metrics'][0][3]],
+                    ["AWS/EC2", "DiskWriteOps", "InstanceId", metric_info['metrics'][0][3]]
+                ],
+                "view": "timeSeries",
+                "stat": "Average",
+                "region": "us-east-1",
+                "title": f"Disk I/O for {resource_type}",
+                "period": 300,
+                "yAxis": {
+                    "left": {
+                        "min": 0
+                    }
+                }
+            }
+        }
+        widgets.append(disk_widget)
+        y += 6
+    return widgets
+
+# Function to create Idle Resource Widgets (for EC2)
+def create_idle_resource_widgets(metrics_data):
+    """Create widgets to track idle EC2 instances with low CPU utilization."""
+    widgets = []
+    x, y = 0, 0
+    for resource_type, metric_info in metrics_data.items():
+        if resource_type == "EC2":
+            idle_widget = {
+                "type": "metric",
+                "x": x,
+                "y": y,
+                "width": 24,
+                "height": 6,
+                "properties": {
+                    "metrics": [
+                        ["AWS/EC2", "CPUUtilization", "InstanceId", metric_info['metrics'][0][3]]
+                    ],
+                    "view": "timeSeries",
+                    "stat": "Average",
+                    "region": "us-east-1",
+                    "title": f"Idle Resources (Low CPU Utilization) - {resource_type}",
+                    "period": 300,
+                    "yAxis": {
+                        "left": {
+                            "min": 0
+                        }
+                    }
+                }
+            }
+            widgets.append(idle_widget)
+            y += 6
+    return widgets
+
+# Function to create status summary widget (Widget 21)
+def create_status_summary_widget(resource_counts, unhealthy_counts):
+    widgets = []
+    x, y = 0, 0
+    for resource_type, count in resource_counts.items():
+        unhealthy = unhealthy_counts.get(resource_type, 0)
+        healthy = count - unhealthy
+        widget = {
+            "type": "metric",
+            "x": x,
+            "y": y,
+            "width": 12,
+            "height": 6,
+            "properties": {
+                "metrics": [["AWS/Service", "HealthyCount", "Service", resource_type],
+                            ["AWS/Service", "UnhealthyCount", "Service", resource_type]],
+                "view": "singleValue",
+                "region": "us-east-1",
+                "title": f"{resource_type} - Healthy: {healthy}, Unhealthy: {unhealthy}",
+                "stat": "Sum",
+                "period": 300
+            }
+        }
+        widgets.append(widget)
+        y += 6
+    return widgets
+
+# Main Lambda handler function
+def lambda_handler(event, context):
+    try:
+        # Fetch all existing entries in DynamoDB
+        dynamodb_entries = get_all_dynamodb_entries()
+
+        # Initialize data structures
+        resource_counts = {}
+        metrics_data = {}
+        logs_data = {}
+        unhealthy_counts = {}
+
+        # Process each entry in DynamoDB
+        for entry in dynamodb_entries:
+            try:
+                resource_id = entry['ResourceID']['S']
+                resource_type = entry['ResourceType']['S']
+                metric_name = entry['MetricName']['S']
+                statistic = entry.get('Statistic', {}).get('S', "Average")
+                threshold = float(entry.get('Threshold', {}).get('N', "80"))
+
+                # Validate namespace and dimension names
+                namespace, dimension_names = resource_namespace_map.get(resource_type, ('AWS/Unknown', ['ResourceID']))
+
+                # Update resource counts
+                resource_counts[resource_type] = resource_counts.get(resource_type, 0) + 1
+
+                # Collect metrics for aggregate widget
+                if resource_type not in metrics_data:
+                    metrics_data[resource_type] = {'metrics': [], 'stat': statistic, 'threshold': threshold}
+                
+                # Append the metric to metrics_data for this resource
+                resource_ids = [entry.get(dim_name, {}).get('S', resource_id) for dim_name in dimension_names]
+                metrics_data[resource_type]['metrics'].append(build_metric_widget(namespace, metric_name, dimension_names, resource_ids, 300, statistic))
+
+            except Exception as e:
+                logger.error(f"Error processing DynamoDB entry: {e}")
+
+        # Create widgets
+        widgets = []
+        widgets.extend(create_cpu_utilization_widgets(metrics_data))      # CPU Utilization Widgets
+        widgets.extend(create_memory_usage_widgets(metrics_data))         # Memory Usage Widgets
+        widgets.extend(create_disk_io_widgets(metrics_data))              # Disk I/O Widgets
+        widgets.extend(create_idle_resource_widgets(metrics_data))        # Idle Resource Widgets
+        widgets.extend(create_status_summary_widget(resource_counts, unhealthy_counts))  # Status Summary Widgets
+
+        # Create the dashboard body with widgets
+        dashboard_body = {"widgets": widgets}
+
+        # Log the final dashboard body for debugging
+        logger.info(f"Final dashboard body: {json.dumps(dashboard_body, indent=2)}")
+
+        # Create or update the CloudWatch dashboard
+        response = cloudwatch.put_dashboard(
+            DashboardName="DynamicResourceDashboard",
+            DashboardBody=json.dumps(dashboard_body)
+        )
+
+        # Log the CloudWatch response to capture any errors
+        logger.info(f"CloudWatch response: {json.dumps(response, indent=2)}")
+        logger.info("Successfully created/updated CloudWatch dashboard.")
+
+    except Exception as e:
+        logger.error(f"Lambda execution failed: {e}")
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps('CloudWatch Dashboard creation and update completed successfully')
+    }

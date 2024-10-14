@@ -1,0 +1,273 @@
+import boto3
+import json
+import logging
+
+# Initialize AWS clients
+dynamodb = boto3.client('dynamodb')
+cloudwatch = boto3.client('cloudwatch')
+
+# Setup logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Dictionary to map resource types to correct dimension names and namespace
+resource_namespace_map = {
+    'EC2': ('AWS/EC2', ['InstanceId', 'AutoScalingGroupName']),
+    'RDS': ('AWS/RDS', ['DBInstanceIdentifier']),
+    'ALB': ('AWS/ApplicationELB', ['LoadBalancer']),
+    'ALBTarget': ('AWS/ApplicationELB', ['TargetGroup', 'LoadBalancer']),
+    'Lambda': ('AWS/Lambda', ['FunctionName']),
+    'Elasticache': ('AWS/ElastiCache', ['CacheClusterId', 'CacheNodeId']),
+    'Redshift': ('AWS/Redshift', ['ClusterIdentifier']),
+    'FSx': ('AWS/FSx', ['FileSystemId']),
+    'Macie': ('AWS/Macie', ['MemberAccountId']),
+    'Neptune': ('AWS/Neptune', ['DBInstanceIdentifier']),
+    'Opensearch': ('AWS/ES', ['DomainName']),
+    'Outposts': ('AWS/Outposts', ['OutpostId']),
+    'Aurora': ('AWS/RDS', ['DBClusterIdentifier']),
+    'Backup': ('AWS/Backup', ['ResourceArn']),
+}
+
+# Function to get all DynamoDB entries with proper error handling
+def get_all_dynamodb_entries():
+    try:
+        response = dynamodb.scan(TableName='ResourceMetrics')
+        entries = response['Items']
+        logger.info(f"Fetched {len(entries)} entries from DynamoDB.")
+        return entries
+    except Exception as e:
+        logger.error(f"Error fetching entries from DynamoDB: {e}")
+        return []
+
+# Function to build metrics widget properties with support for multiple dimensions
+def build_metric_widget(namespace, metric_name, dimension_names, resource_ids, period, stat):
+    metrics = [namespace, metric_name]
+    for dim_name, resource_id in zip(dimension_names, resource_ids):
+        metrics.append(dim_name)
+        metrics.append(resource_id)
+    return metrics
+
+# Function to create resource summary widgets (Widgets 16 & 17)
+def create_resource_summary_widgets(resource_counts):
+    widgets = []
+    x, y = 0, 0
+    for resource_type, count in resource_counts.items():
+        widget = {
+            "type": "metric",
+            "x": x,
+            "y": y,
+            "width": 12,
+            "height": 6,
+            "properties": {
+                "metrics": [["AWS/Service", "ResourceCount", "Service", resource_type]],
+                "view": "singleValue",
+                "region": "us-east-1",
+                "title": f"{resource_type} Resource Count",
+                "stat": "Sum",
+                "period": 300
+            }
+        }
+        logger.info(f"Created resource summary widget: {json.dumps(widget)}")
+        widgets.append(widget)
+        y += 6
+    return widgets
+
+# Function to create aggregate metric widgets (Widget 18)
+def create_aggregate_metric_widget(metrics_data):
+    widgets = []
+    x, y = 0, 0
+    for resource_type, metric_info in metrics_data.items():
+        widget = {
+            "type": "metric",
+            "x": x,
+            "y": y,
+            "width": 24,
+            "height": 6,
+            "properties": {
+                "metrics": metric_info['metrics'],
+                "view": "timeSeries",
+                "stat": "Average",
+                "region": "us-east-1",
+                "title": f"Average {metric_info['metrics'][0][1]} for {resource_type}",
+                "period": 300,
+                "yAxis": {
+                    "left": {
+                        "min": 0
+                    }
+                }
+            }
+        }
+        logger.info(f"Created aggregate metric widget: {json.dumps(widget)}")
+        widgets.append(widget)
+        y += 6
+    return widgets
+
+# Function to create performance metrics widgets (new)
+def create_performance_metrics_widgets(metrics_data):
+    """Creates widgets that focus on CPU, memory, and network performance across resources."""
+    widgets = []
+    x, y = 0, 0
+    for resource_type, metric_info in metrics_data.items():
+        cpu_widget = {
+            "type": "metric",
+            "x": x,
+            "y": y,
+            "width": 24,
+            "height": 6,
+            "properties": {
+                "metrics": [
+                    ["AWS/EC2", "CPUUtilization", "InstanceId", metric_info['metrics'][0][3]]
+                ],
+                "view": "timeSeries",
+                "stat": "Average",
+                "region": "us-east-1",
+                "title": f"CPU Utilization for {resource_type}",
+                "period": 300,
+                "yAxis": {
+                    "left": {
+                        "min": 0
+                    }
+                }
+            }
+        }
+        widgets.append(cpu_widget)
+        y += 6
+    return widgets
+
+# Function to create status summary widget (Widget 21)
+def create_status_summary_widget(resource_counts, unhealthy_counts):
+    widgets = []
+    x, y = 0, 0
+    for resource_type, count in resource_counts.items():
+        unhealthy = unhealthy_counts.get(resource_type, 0)
+        healthy = count - unhealthy
+        widget = {
+            "type": "metric",
+            "x": x,
+            "y": y,
+            "width": 12,
+            "height": 6,
+            "properties": {
+                "metrics": [["AWS/Service", "HealthyCount", "Service", resource_type],
+                            ["AWS/Service", "UnhealthyCount", "Service", resource_type]],
+                "view": "singleValue",
+                "region": "us-east-1",
+                "title": f"{resource_type} - Healthy: {healthy}, Unhealthy: {unhealthy}",
+                "stat": "Sum",
+                "period": 300
+            }
+        }
+        logger.info(f"Created status summary widget: {json.dumps(widget)}")
+        widgets.append(widget)
+        y += 6
+    return widgets
+
+# Function to create anomaly detection widgets (Widget 22)
+def create_anomaly_detection_widget(metrics_data):
+    widgets = []
+    x, y = 0, 0
+    for resource_type, metric_info in metrics_data.items():
+        widget = {
+            "type": "metric",
+            "x": x,
+            "y": y,
+            "width": 24,
+            "height": 6,
+            "properties": {
+                "metrics": metric_info['metrics'],
+                "view": "timeSeries",
+                "stat": "Average",
+                "region": "us-east-1",
+                "title": f"Anomaly Detection for {resource_type}",
+                "period": 300,
+                "annotations": {
+                    "horizontal": [
+                        {
+                            "label": "Anomaly Detection",
+                            "fill": "below",
+                            "color": "#ff0000",
+                            "anomalyDetection": True
+                        }
+                    ]
+                },
+                "yAxis": {
+                    "left": {
+                        "min": 0
+                    }
+                }
+            }
+        }
+        logger.info(f"Created anomaly detection widget: {json.dumps(widget)}")
+        widgets.append(widget)
+        y += 6
+    return widgets
+
+# Main Lambda handler function
+def lambda_handler(event, context):
+    try:
+        # Fetch all existing entries in DynamoDB
+        dynamodb_entries = get_all_dynamodb_entries()
+
+        # Initialize data structures
+        resource_counts = {}
+        metrics_data = {}
+        logs_data = {}
+        unhealthy_counts = {}
+
+        # Process each entry in DynamoDB
+        for entry in dynamodb_entries:
+            try:
+                resource_id = entry['ResourceID']['S']
+                resource_type = entry['ResourceType']['S']
+                metric_name = entry['MetricName']['S']
+                statistic = entry.get('Statistic', {}).get('S', "Average")
+                threshold = float(entry.get('Threshold', {}).get('N', "80"))
+
+                # Validate namespace and dimension names
+                namespace, dimension_names = resource_namespace_map.get(resource_type, ('AWS/Unknown', ['ResourceID']))
+
+                # Update resource counts
+                resource_counts[resource_type] = resource_counts.get(resource_type, 0) + 1
+
+                # Collect metrics for aggregate widget
+                if resource_type not in metrics_data:
+                    metrics_data[resource_type] = {'metrics': [], 'stat': statistic, 'threshold': threshold}
+                
+                # Append the metric to metrics_data for this resource
+                resource_ids = [entry.get(dim_name, {}).get('S', resource_id) for dim_name in dimension_names]
+                metrics_data[resource_type]['metrics'].append(build_metric_widget(namespace, metric_name, dimension_names, resource_ids, 300, statistic))
+
+            except Exception as e:
+                logger.error(f"Error processing DynamoDB entry: {e}")
+
+        # Create widgets
+        widgets = []
+        widgets.extend(create_resource_summary_widgets(resource_counts))  # Widgets 16 & 17
+        widgets.extend(create_aggregate_metric_widget(metrics_data))      # Widget 18
+        widgets.extend(create_performance_metrics_widgets(metrics_data))  # New Performance Metrics Widgets
+        widgets.extend(create_status_summary_widget(resource_counts, unhealthy_counts))  # Widget 21
+        widgets.extend(create_anomaly_detection_widget(metrics_data))     # Widget 22
+
+        # Create the dashboard body with widgets
+        dashboard_body = {"widgets": widgets}
+
+        # Log the final dashboard body for debugging
+        logger.info(f"Final dashboard body: {json.dumps(dashboard_body, indent=2)}")
+
+        # Create or update the CloudWatch dashboard
+        response = cloudwatch.put_dashboard(
+            DashboardName="DynamicResourceDashboard",
+            DashboardBody=json.dumps(dashboard_body)
+        )
+
+        # Log the CloudWatch response to capture any errors
+        logger.info(f"CloudWatch response: {json.dumps(response, indent=2)}")
+        logger.info("Successfully created/updated CloudWatch dashboard.")
+
+    except Exception as e:
+        logger.error(f"Lambda execution failed: {e}")
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps('CloudWatch Dashboard creation and update completed successfully')
+    }
