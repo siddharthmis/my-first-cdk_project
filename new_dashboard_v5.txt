@@ -11,22 +11,22 @@ logs_client = boto3.client('logs')
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# Dictionary to map resource types to the correct dimension name
-dimension_name_map = {
-    'EC2': 'InstanceId',
-    'RDS': 'DBInstanceIdentifier',
-    'ALB': 'LoadBalancer',
-    'ALBTarget': 'TargetGroup',
-    'Lambda': 'FunctionName',
-    'Elasticache': 'CacheClusterId',
-    'Redshift': 'ClusterIdentifier',
-    'FSx': 'FileSystemId',
-    'Macie': 'MemberAccountId',
-    'Neptune': 'DBInstanceIdentifier',
-    'Opensearch': 'DomainName',  # Also for AWS ES (Elasticsearch)
-    'Outposts': 'OutpostId',
-    'Aurora': 'DBClusterIdentifier',
-    'Backup': 'ResourceArn',
+# Dictionary to map resource types to correct dimension names and namespace
+resource_namespace_map = {
+    'EC2': ('AWS/EC2', ['InstanceId', 'AutoScalingGroupName']),
+    'RDS': ('AWS/RDS', ['DBInstanceIdentifier']),
+    'ALB': ('AWS/ApplicationELB', ['LoadBalancer']),
+    'ALBTarget': ('AWS/ApplicationELB', ['TargetGroup', 'LoadBalancer']),
+    'Lambda': ('AWS/Lambda', ['FunctionName']),
+    'Elasticache': ('AWS/ElastiCache', ['CacheClusterId', 'CacheNodeId']),
+    'Redshift': ('AWS/Redshift', ['ClusterIdentifier']),
+    'FSx': ('AWS/FSx', ['FileSystemId']),
+    'Macie': ('AWS/Macie', ['MemberAccountId']),
+    'Neptune': ('AWS/Neptune', ['DBInstanceIdentifier']),
+    'Opensearch': ('AWS/ES', ['DomainName']),  # OpenSearch/Elasticsearch
+    'Outposts': ('AWS/Outposts', ['OutpostId']),
+    'Aurora': ('AWS/RDS', ['DBClusterIdentifier']),
+    'Backup': ('AWS/Backup', ['ResourceArn']),
 }
 
 # Function to get all DynamoDB entries with proper error handling
@@ -40,11 +40,51 @@ def get_all_dynamodb_entries():
         logger.error(f"Error fetching entries from DynamoDB: {e}")
         return []
 
-# Function to build metrics widget properties
-def build_metric_widget(resource_type, metric_name, dimension_name, resource_id, namespace, period, stat):
-    return [
-        namespace, metric_name, dimension_name, resource_id
-    ]
+# Function to look up log groups for a resource with pagination and filtering
+def lookup_log_groups(resource_name):
+    try:
+        log_group_prefix = "/aws/"
+        found_log_groups = []
+        next_token = None
+
+        # Paginate through log groups to find all matches
+        while True:
+            if next_token:
+                response = logs_client.describe_log_groups(logGroupNamePrefix=log_group_prefix, nextToken=next_token)
+            else:
+                response = logs_client.describe_log_groups(logGroupNamePrefix=log_group_prefix)
+            
+            log_groups = response.get('logGroups', [])
+            next_token = response.get('nextToken', None)
+
+            # Search for any log group that contains the resource name
+            for log_group in log_groups:
+                log_group_name = log_group['logGroupName']
+                if resource_name in log_group_name:
+                    logger.info(f"Found log group: {log_group_name} for resource: {resource_name}")
+                    found_log_groups.append(log_group_name)
+
+            if not next_token:
+                break  # Exit the loop if no more log groups to search
+
+        # If we found matches, return the list; otherwise, return the default log group
+        if found_log_groups:
+            return found_log_groups
+        else:
+            logger.warning(f"No log group found for resource: {resource_name}. Using default log group.")
+            return ["/aws/default-log-group"]
+
+    except Exception as e:
+        logger.error(f"Error looking up log groups for {resource_name}: {e}")
+        return ["/aws/default-log-group"]
+
+# Function to build metrics widget properties with support for multiple dimensions
+def build_metric_widget(namespace, metric_name, dimension_names, resource_ids, period, stat):
+    metrics = [namespace, metric_name]
+    for dim_name, resource_id in zip(dimension_names, resource_ids):
+        metrics.append(dim_name)
+        metrics.append(resource_id)
+    return metrics
 
 # Function to create resource summary widgets (Widgets 16 & 17)
 def create_resource_summary_widgets(resource_counts):
@@ -83,7 +123,7 @@ def create_aggregate_metric_widget(metrics_data):
             "width": 24,
             "height": 6,
             "properties": {
-                "metrics": metric_info['metrics'],  # List of all metrics for this resource type
+                "metrics": metric_info['metrics'],
                 "view": "timeSeries",
                 "stat": "Average",
                 "region": "us-east-1",
@@ -206,11 +246,12 @@ def lambda_handler(event, context):
             try:
                 resource_id = entry['ResourceID']['S']
                 resource_type = entry['ResourceType']['S']
-                resource_name = entry.get('ResourceName', {}).get('S', resource_id)
                 metric_name = entry['MetricName']['S']
-                namespace = entry['Namespace']['S']
                 statistic = entry.get('Statistic', {}).get('S', "Average")
                 threshold = float(entry.get('Threshold', {}).get('N', "80"))
+
+                # Validate namespace and dimension names
+                namespace, dimension_names = resource_namespace_map.get(resource_type, ('AWS/Unknown', ['ResourceID']))
 
                 # Update resource counts
                 resource_counts[resource_type] = resource_counts.get(resource_type, 0) + 1
@@ -219,16 +260,9 @@ def lambda_handler(event, context):
                 if resource_type not in metrics_data:
                     metrics_data[resource_type] = {'metrics': [], 'stat': statistic, 'threshold': threshold}
                 
-                # Fetch the correct dimension name from the mapping
-                dimension_name = dimension_name_map.get(resource_type, "ResourceID")
-                
                 # Append the metric to metrics_data for this resource
-                metrics_data[resource_type]['metrics'].append(build_metric_widget(resource_type, metric_name, dimension_name, resource_id, namespace, 300, statistic))
-
-                # Look up log groups based on resource name
-                log_group_names = lookup_log_groups(resource_name)
-                if log_group_names:
-                    logs_data[resource_type] = log_group_names
+                resource_ids = [entry.get(dim_name, {}).get('S', resource_id) for dim_name in dimension_names]
+                metrics_data[resource_type]['metrics'].append(build_metric_widget(namespace, metric_name, dimension_names, resource_ids, 300, statistic))
 
             except Exception as e:
                 logger.error(f"Error processing DynamoDB entry: {e}")
