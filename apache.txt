@@ -1,0 +1,23 @@
+#!/bin/bash
+
+# Fetch the HTML content of the Apache HTTP download page
+APACHE_DOWNLOAD_URL="https://httpd.apache.org/download.cgi"
+LATEST_VERSION=$(curl -s $APACHE_DOWNLOAD_URL | grep -oP '(?<=httpd-)\d+\.\d+\.\d+(?=\.tar\.gz)' | sort -V | tail -n 1)
+
+# If a version is found, continue to download and install it
+if [ -z "$LATEST_VERSION" ]; then
+  echo "Unable to fetch the latest version."
+  exit 1
+fi
+
+echo "Latest Apache HTTP Server version: $LATEST_VERSION"
+
+# Construct the URL to download the latest version
+APACHE_TARBALL_URL="https://downloads.apache.org/httpd/httpd-${LATEST_VERSION}.tar.gz"
+echo "Downloading Apache HTTP Server from: $APACHE_TARBALL_URL"
+
+# Download and install the latest version of Apache HTTP Server
+wget $APACHE_TARBALL_URL -O /tmp/httpd-${LATEST_VERSION}.tar.gz
+
+# Continue with the installation process
+# (the rest of your installation script here)
