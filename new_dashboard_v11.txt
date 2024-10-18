@@ -1,0 +1,262 @@
+import boto3
+import json
+import logging
+
+# Initialize AWS clients
+dynamodb = boto3.client('dynamodb')
+cloudwatch = boto3.client('cloudwatch')
+
+# Setup logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Dictionary to map resource types to correct dimension names and namespace
+resource_namespace_map = {
+    'EC2': ('AWS/EC2', ['InstanceId']),
+    'RDS': ('AWS/RDS', ['DBInstanceIdentifier']),
+    'ALB': ('AWS/ApplicationELB', ['LoadBalancer']),
+    'ALBTarget': ('AWS/ApplicationELB', ['TargetGroup', 'LoadBalancer']),
+    'Lambda': ('AWS/Lambda', ['FunctionName']),
+    'Elasticache': ('AWS/ElastiCache', ['CacheClusterId']),
+    'Redshift': ('AWS/Redshift', ['ClusterIdentifier']),
+    'FSx': ('AWS/FSx', ['FileSystemId']),
+    'Macie': ('AWS/Macie', ['MemberAccountId']),
+    'Neptune': ('AWS/Neptune', ['DBInstanceIdentifier']),
+    'Opensearch': ('AWS/ES', ['DomainName']),
+    'Outposts': ('AWS/Outposts', ['OutpostId']),
+    'Aurora': ('AWS/RDS', ['DBClusterIdentifier']),
+    'Backup': ('AWS/Backup', ['ResourceArn']),
+}
+
+# Define health metrics for each service type
+service_health_metrics = {
+    'EC2': 'StatusCheckFailed',
+    'RDS': 'FreeStorageSpace',
+    'ALB': 'UnHealthyHostCount',
+    'Lambda': 'Errors',
+    'Elasticache': 'CPUUtilization',
+    'Redshift': 'CPUUtilization',
+    'FSx': 'DiskReadOps',
+    'Opensearch': 'ClusterStatus.red',
+    'Neptune': 'CPUUtilization',
+    'Outposts': 'UnhealthyInstanceCount',
+}
+
+# Function to get all DynamoDB entries with proper error handling
+def get_all_dynamodb_entries():
+    try:
+        response = dynamodb.scan(TableName='ResourceMetrics')
+        entries = response['Items']
+        logger.info(f"Fetched {len(entries)} entries from DynamoDB.")
+        return entries
+    except Exception as e:
+        logger.error(f"Error fetching entries from DynamoDB: {e}")
+        return []
+
+# Function to check health status based on resource type and metrics
+def check_health_status(resource_type, metric_name, metric_value):
+    # Get health metric for the resource type
+    health_metric = service_health_metrics.get(resource_type, None)
+    
+    if not health_metric:
+        return 'Unknown'  # If no health metric defined for the resource type
+    
+    if resource_type == 'EC2':
+        return 'Unhealthy' if metric_name == 'StatusCheckFailed' and float(metric_value) > 0 else 'Healthy'
+    elif resource_type == 'RDS':
+        return 'Unhealthy' if metric_name == 'FreeStorageSpace' and float(metric_value) < 1_073_741_824 else 'Healthy'
+    elif resource_type == 'ALB':
+        return 'Unhealthy' if metric_name == 'UnHealthyHostCount' and float(metric_value) > 0 else 'Healthy'
+    elif resource_type == 'Lambda':
+        return 'Unhealthy' if metric_name in ['Errors', 'Throttles'] and float(metric_value) > 0 else 'Healthy'
+    # Add other services similarly...
+    return 'Unknown'
+
+# Function to create resource count widgets
+def create_resource_summary_widgets(resource_counts):
+    widgets = []
+    x, y = 0, 0
+    for resource_type, count in resource_counts.items():
+        widget = {
+            "type": "text",
+            "x": x,
+            "y": y,
+            "width": 12,
+            "height": 6,
+            "properties": {
+                "markdown": f"### {resource_type} Resource Count: **{count}**"
+            }
+        }
+        widgets.append(widget)
+        x += 12  # Move to the next column, max 2 widgets per row
+        if x >= 24:  # Wrap to next row if x exceeds the width of 24
+            x = 0
+            y += 6
+    return widgets
+
+# Function to create Healthy vs Unhealthy Resource Widgets
+def create_status_summary_widget(resource_counts, unhealthy_counts):
+    widgets = []
+    x, y = 0, 0
+    for resource_type, count in resource_counts.items():
+        unhealthy = unhealthy_counts.get(resource_type, 0)
+        healthy = count - unhealthy
+        widget = {
+            "type": "text",
+            "x": x,
+            "y": y,
+            "width": 12,
+            "height": 6,
+            "properties": {
+                "markdown": f"### {resource_type} - Healthy: **{healthy}**, Unhealthy: **{unhealthy}**"
+            }
+        }
+        widgets.append(widget)
+        x += 12  # Move to the next column, max 2 widgets per row
+        if x >= 24:  # Wrap to next row if x exceeds the width of 24
+            x = 0
+            y += 6
+    return widgets
+
+# Function to create aggregate metric widgets (e.g., CPU utilization)
+def create_aggregate_metric_widget(metrics_data):
+    widgets = []
+    x, y = 0, 0
+    for resource_type, metric_info in metrics_data.items():
+        widget = {
+            "type": "metric",
+            "x": x,
+            "y": y,
+            "width": 24,
+            "height": 6,
+            "properties": {
+                "metrics": metric_info['metrics'],
+                "view": "timeSeries",
+                "stat": "Average",
+                "region": "us-east-1",
+                "title": f"Average {metric_info['metrics'][0][1]} for {resource_type}",
+                "period": 300,
+                "yAxis": {
+                    "left": {
+                        "min": 0
+                    }
+                }
+            }
+        }
+        widgets.append(widget)
+        y += 6  # Move to next row after adding a widget
+    return widgets
+
+# Function to create anomaly detection widgets
+def create_anomaly_detection_widget(metrics_data):
+    widgets = []
+    x, y = 0, 0
+    for resource_type, metric_info in metrics_data.items():
+        widget = {
+            "type": "metric",
+            "x": x,
+            "y": y,
+            "width": 24,
+            "height": 6,
+            "properties": {
+                "metrics": metric_info['metrics'],
+                "view": "timeSeries",
+                "stat": "Average",
+                "region": "us-east-1",
+                "title": f"Anomaly Detection for {resource_type}",
+                "period": 300,
+                "annotations": {
+                    "horizontal": [
+                        {
+                            "label": "Anomaly Detection",
+                            "fill": "below",
+                            "color": "#ff0000",
+                            "anomalyDetection": True
+                        }
+                    ]
+                },
+                "yAxis": {
+                    "left": {
+                        "min": 0
+                    }
+                }
+            }
+        }
+        widgets.append(widget)
+        y += 6  # Move to next row after adding a widget
+    return widgets
+
+# Main Lambda handler function
+def lambda_handler(event, context):
+    try:
+        # Fetch all existing entries in DynamoDB
+        dynamodb_entries = get_all_dynamodb_entries()
+
+        # Initialize data structures
+        resource_counts = {}
+        unhealthy_counts = {}
+        metrics_data = {}
+
+        # Process each entry in DynamoDB
+        for entry in dynamodb_entries:
+            try:
+                resource_type = entry['ResourceType']['S']
+                resource_id = entry['ResourceID']['S']
+                metric_name = entry['MetricName']['S']
+                metric_value = entry['MetricValue']['N']  # Assuming MetricValue is stored in DynamoDB
+                statistic = entry.get('Statistic', {}).get('S', "Average")
+
+                # Check health status based on resource type and metric
+                health_status = check_health_status(resource_type, metric_name, metric_value)
+
+                # Update resource counts
+                resource_counts[resource_type] = resource_counts.get(resource_type, 0) + 1
+
+                # Track unhealthy resources
+                if health_status == 'Unhealthy':
+                    unhealthy_counts[resource_type] = unhealthy_counts.get(resource_type, 0) + 1
+
+                # Collect metrics for aggregate widgets
+                namespace, dimension_names = resource_namespace_map.get(resource_type, ('AWS/Unknown', ['ResourceID']))
+                resource_ids = [entry.get(dim_name, {}).get('S', resource_id) for dim_name in dimension_names]
+
+                if resource_type not in metrics_data:
+                    metrics_data[resource_type] = {'metrics': []}
+                
+                metrics_data[resource_type]['metrics'].append(
+                    build_metric_widget(namespace, metric_name, dimension_names, resource_ids, 300, statistic)
+                )
+
+            except Exception as e:
+                logger.error(f"Error processing DynamoDB entry: {e}")
+
+        # Create widgets for resource summary, health status, aggregate metrics, and anomaly detection
+        widgets = []
+        widgets.extend(create_resource_summary_widgets(resource_counts))  # Resource count widgets
+        widgets.extend(create_status_summary_widget(resource_counts, unhealthy_counts))  # Health status widgets
+        widgets.extend(create_aggregate_metric_widget(metrics_data))  # Aggregate metric widgets
+        widgets.extend(create_anomaly_detection_widget(metrics_data))  # Anomaly detection widgets
+
+        # Create the dashboard body with widgets
+        dashboard_body = {"widgets": widgets}
+
+        # Log the final dashboard body for debugging
+        logger.info(f"Final dashboard body: {json.dumps(dashboard_body, indent=2)}")
+
+        # Create or update the CloudWatch dashboard
+        response = cloudwatch.put_dashboard(
+            DashboardName="DynamicResourceDashboard",
+            DashboardBody=json.dumps(dashboard_body)
+        )
+
+        # Log the CloudWatch response to capture any errors
+        logger.info(f"CloudWatch response: {json.dumps(response, indent=2)}")
+        logger.info("Successfully created/updated CloudWatch dashboard.")
+
+    except Exception as e:
+        logger.error(f"Lambda execution failed: {e}")
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps('CloudWatch Dashboard creation and update completed successfully')
+    }
