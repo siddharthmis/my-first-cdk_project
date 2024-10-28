@@ -1,0 +1,62 @@
+import json
+import boto3
+
+# Initialize SecurityHub client
+securityhub = boto3.client('securityhub')
+
+def get_security_score():
+    try:
+        # Fetch findings with relevant filters (e.g., only ACTIVE findings)
+        response = securityhub.get_findings(
+            Filters={
+                'RecordState': {'Value': 'ACTIVE', 'Comparison': 'EQUALS'}
+            }
+        )
+        
+        findings = response['Findings']
+        
+        total_controls = 0
+        passed_controls = 0
+
+        # Iterate through findings
+        for finding in findings:
+            # Assuming each finding has a 'Compliance' field
+            if 'Compliance' in finding and 'Status' in finding['Compliance']:
+                total_controls += 1
+                # Increment passed controls if compliant
+                if finding['Compliance']['Status'] == 'PASSED':
+                    passed_controls += 1
+        
+        # Avoid division by zero
+        if total_controls == 0:
+            return 0
+
+        # Calculate security score as a percentage
+        security_score = (passed_controls / total_controls) * 100
+        return security_score
+
+    except Exception as e:
+        print(f"Error fetching security score: {str(e)}")
+        raise e
+
+def lambda_handler(event, context):
+    try:
+        # Get security score
+        security_score = get_security_score()
+
+        return {
+            'statusCode': 200,
+            'body': json.dumps({
+                'message': 'Security Score Calculated',
+                'security_score': security_score
+            })
+        }
+    
+    except Exception as e:
+        return {
+            'statusCode': 500,
+            'body': json.dumps({
+                'message': 'Error calculating security score',
+                'error': str(e)
+            })
+        }
