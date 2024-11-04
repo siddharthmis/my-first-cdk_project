@@ -1,0 +1,111 @@
+import json
+import boto3
+import os
+import time
+import logging
+
+# Initialize logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Initialize boto3 clients
+ssm_client = boto3.client('ssm')
+ec2_client = boto3.client('ec2')
+
+# Define the SSM document for patching based on OS type
+WINDOWS_PATCH_DOCUMENT = os.getenv('WINDOWS_PATCH_DOCUMENT', 'AWS-ApplyPatchBaseline')
+LINUX_PATCH_DOCUMENT = os.getenv('LINUX_PATCH_DOCUMENT', 'AWS-RunPatchBaseline')
+
+def is_ssm_managed(instance_id):
+    """
+    Check if the instance is reporting to SSM by using describe_instance_information.
+    """
+    try:
+        response = ssm_client.describe_instance_information(
+            Filters=[{
+                'Key': 'InstanceIds',
+                'Values': [instance_id]
+            }]
+        )
+        # Check if there are any managed instances with this ID reporting to SSM
+        if response['InstanceInformationList']:
+            return True
+        else:
+            return False
+    except Exception as e:
+        logger.error(f"Error checking SSM status for instance {instance_id}: {str(e)}")
+        return False
+
+def lambda_handler(event, context):
+    # Extract instance ID and other details from the EventBridge event
+    detail = event.get('detail', {})
+    instance_id = detail.get('instance-id')
+    
+    # Validate instance ID
+    if not instance_id:
+        logger.error("No instance ID in event. Exiting.")
+        return {
+            'statusCode': 400,
+            'body': json.dumps('Instance ID is missing in the event data.')
+        }
+    
+    # Get the instance platform details using EC2 describe-instances
+    try:
+        response = ec2_client.describe_instances(InstanceIds=[instance_id])
+        instance = response['Reservations'][0]['Instances'][0]
+        platform = instance.get('Platform', 'Linux').lower()  # 'Linux' if no platform is found
+        logger.info(f"Instance {instance_id} is a {platform} server.")
+    except Exception as e:
+        logger.error(f"Error getting instance details: {str(e)}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps(f"Failed to get instance details: {str(e)}")
+        }
+
+    # Wait for the instance to start reporting to SSM
+    retries = 5
+    while retries > 0:
+        if is_ssm_managed(instance_id):
+            logger.info(f"Instance {instance_id} is reporting to SSM.")
+            break
+        else:
+            logger.warning(f"Instance {instance_id} is not yet reporting to SSM. Retrying... ({retries} retries left)")
+            time.sleep(30)  # Wait for 30 seconds before retrying
+            retries -= 1
+
+    # If the instance is not reporting to SSM, exit
+    if retries == 0:
+        logger.error(f"Instance {instance_id} did not start reporting to SSM within the retry limit.")
+        return {
+            'statusCode': 500,
+            'body': json.dumps(f"Instance {instance_id} is not reporting to SSM.")
+        }
+
+    # Trigger patching based on the platform
+    try:
+        if platform == 'windows':
+            logger.info(f"Triggering patch for Windows instance {instance_id}")
+            response = ssm_client.send_command(
+                InstanceIds=[instance_id],
+                DocumentName=WINDOWS_PATCH_DOCUMENT,
+                Comment=f'Automatic patching for Windows instance {instance_id}'
+            )
+        else:
+            logger.info(f"Triggering patch for Linux instance {instance_id}")
+            response = ssm_client.send_command(
+                InstanceIds=[instance_id],
+                DocumentName=LINUX_PATCH_DOCUMENT,
+                Comment=f'Automatic patching for Linux instance {instance_id}'
+            )
+        logger.info(f"SSM command response: {response}")
+    except Exception as e:
+        logger.error(f"Error triggering patching: {str(e)}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps(f"Failed to trigger patching for instance {instance_id}: {str(e)}")
+        }
+    
+    return {
+        'statusCode': 200,
+        'body': json.dumps(f"Patch triggered for instance {instance_id} successfully.")
+    }
