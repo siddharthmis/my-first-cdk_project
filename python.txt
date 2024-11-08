@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "2.2",
+  "description": "SSM Document to update Python to the latest version on Linux and Windows.",
+  "mainSteps": [
+    {
+      "action": "aws:runCommand",
+      "name": "UpdatePythonLinux",
+      "precondition": {
+        "StringEquals": ["platformType", "Linux"]
+      },
+      "inputs": {
+        "DocumentName": "AWS-RunShellScript",
+        "Parameters": {
+          "commands": [
+            "#!/bin/bash",
+            "echo 'Updating Python to the latest version on Linux...'",
+            "sudo yum install -y gcc openssl-devel bzip2-devel libffi-devel || sudo apt-get install -y build-essential libssl-dev libffi-dev zlib1g-dev",
+            "LATEST_PYTHON=$(curl -s https://www.python.org/ftp/python/ | grep -oP '(?<=<a href=\")\\d+\\.\\d+\\.\\d+(?=/\" class=\"button\")' | sort -V | tail -n 1)",
+            "echo \"Latest Python version found: ${LATEST_PYTHON}\"",
+            "cd /tmp",
+            "wget https://www.python.org/ftp/python/${LATEST_PYTHON}/Python-${LATEST_PYTHON}.tgz -O Python-${LATEST_PYTHON}.tgz",
+            "tar xzf Python-${LATEST_PYTHON}.tgz",
+            "cd Python-${LATEST_PYTHON}",
+            "./configure --enable-optimizations",
+            "make altinstall",
+            "echo \"Python ${LATEST_PYTHON} installed successfully.\""
+          ]
+        }
+      }
+    },
+    {
+      "action": "aws:runCommand",
+      "name": "UpdatePythonWindows",
+      "precondition": {
+        "StringEquals": ["platformType", "Windows"]
+      },
+      "inputs": {
+        "DocumentName": "AWS-RunPowerShellScript",
+        "Parameters": {
+          "commands": [
+            "Write-Output 'Updating Python to the latest version on Windows...'",
+            "$latestPythonVersion = (Invoke-RestMethod -Uri 'https://www.python.org/ftp/python/').Links | Where-Object { $_ -match '\\d+\\.\\d+\\.\\d+/$' } | ForEach-Object { $_ -replace '/', '' } | Sort-Object -Descending | Select-Object -First 1",
+            "Write-Output \"Latest Python version found: $latestPythonVersion\"",
+            "$installerUrl = \"https://www.python.org/ftp/python/$latestPythonVersion/python-$latestPythonVersion-amd64.exe\"",
+            "$installerPath = \"C:\\Temp\\python-$latestPythonVersion-amd64.exe\"",
+            "Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath",
+            "Start-Process -FilePath $installerPath -ArgumentList '/quiet InstallAllUsers=1 PrependPath=1' -Wait",
+            "Write-Output \"Python $latestPythonVersion installed successfully.\""
+          ]
+        }
+      }
+    }
+  ]
+}
