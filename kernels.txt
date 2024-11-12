@@ -1,30 +1,34 @@
 {
   "schemaVersion": "2.2",
-  "description": "Reduce the number of legacy kernels to 1 on Linux-based EC2 instances and update default retention setting.",
+  "description": "Reduce the number of legacy kernels to retain the currently active kernel and the previous one on Linux-based EC2 instances.",
   "mainSteps": [
     {
       "action": "aws:runShellScript",
       "name": "ReduceLegacyKernels",
       "inputs": {
         "runCommand": [
-          "echo 'Updating kernel retention setting in yum configuration...'",
-          "if grep -q '^installonly_limit=' /etc/yum.conf; then",
-          "  sed -i 's/^installonly_limit=.*/installonly_limit=1/' /etc/yum.conf",
-          "else",
-          "  echo 'installonly_limit=1' >> /etc/yum.conf",
-          "fi",
-          "echo 'Kernel retention setting updated to 1.'",
-          "",
           "echo 'Checking number of installed kernels...'",
-          "kernels=$(rpm -q kernel | wc -l)",
-          "echo \"Number of installed kernels: $kernels\"",
-          "if [ \"$kernels\" -gt 1 ]; then",
-          "  echo 'More than 1 kernel installed. Proceeding to remove older kernels...'",
-          "  package-cleanup --oldkernels --count=1 -y",
-          "  echo 'Old kernels removed, only the latest kernel retained.'",
-          "else",
-          "  echo 'Only 1 kernel present. No action needed.'",
-          "fi"
+          "current_kernel=$(uname -r)",
+          "echo \"Currently running kernel: $current_kernel\"",
+          "",
+          "# List all kernels, sorted, and exclude the current one from removal",
+          "kernels_to_keep=2",
+          "installed_kernels=$(rpm -q kernel | sort -V | grep -v \"$current_kernel\")",
+          "",
+          "# Include the current kernel in the list to retain",
+          "kernels_to_retain=$(rpm -q kernel | grep \"$current_kernel\"; echo \"$installed_kernels\" | tail -n $((kernels_to_keep - 1)))",
+          "",
+          "# Find kernels to delete",
+          "for kernel in $(rpm -q kernel); do",
+          "  if ! echo \"$kernels_to_retain\" | grep -q \"$kernel\"; then",
+          "    echo \"Removing kernel: $kernel\"",
+          "    sudo rpm -e \"$kernel\"",
+          "  else",
+          "    echo \"Retaining kernel: $kernel\"",
+          "  fi",
+          "done",
+          "",
+          "echo 'Kernel cleanup completed, retaining only the active and previous kernel.'"
         ]
       }
     }
