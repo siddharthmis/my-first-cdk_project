@@ -1,37 +1,7 @@
 {
   "schemaVersion": "2.2",
-  "description": "SSM Document to install the latest Python version on Linux and Windows.",
+  "description": "SSM Document to install the latest Python stable release version on Windows and Linux with detailed logging.",
   "mainSteps": [
-    {
-      "action": "aws:runCommand",
-      "name": "InstallLatestPythonLinux",
-      "precondition": {
-        "StringEquals": ["platformType", "Linux"]
-      },
-      "inputs": {
-        "DocumentName": "AWS-RunShellScript",
-        "Parameters": {
-          "commands": [
-            "#!/bin/bash",
-            "if command -v python3 &> /dev/null; then",
-            "  echo 'Python is installed. Proceeding with update...'",
-            "  sudo yum install -y gcc openssl-devel bzip2-devel libffi-devel || sudo apt-get install -y build-essential libssl-dev libffi-dev zlib1g-dev",
-            "  LATEST_PYTHON=$(curl -s https://www.python.org/ftp/python/ | grep -oP '\\d+\\.\\d+\\.\\d+' | sort -V | tail -n 1)",
-            "  echo \"Latest Python version found: ${LATEST_PYTHON}\"",
-            "  cd /tmp",
-            "  wget https://www.python.org/ftp/python/${LATEST_PYTHON}/Python-${LATEST_PYTHON}.tgz -O Python-${LATEST_PYTHON}.tgz",
-            "  tar xzf Python-${LATEST_PYTHON}.tgz",
-            "  cd Python-${LATEST_PYTHON}",
-            "  ./configure --enable-optimizations",
-            "  make altinstall",
-            "  echo \"Python ${LATEST_PYTHON} installed successfully.\"",
-            "else",
-            "  echo 'Python is not installed. Skipping update.'",
-            "fi"
-          ]
-        }
-      }
-    },
     {
       "action": "aws:runCommand",
       "name": "InstallLatestPythonWindows",
@@ -42,28 +12,83 @@
         "DocumentName": "AWS-RunPowerShellScript",
         "Parameters": {
           "commands": [
-            "if (Get-Command python -ErrorAction SilentlyContinue) {",
-            "  Write-Output 'Python is installed. Proceeding with update to latest version...'",
-            "  # Retrieve the page content",
-            "  $downloadPage = Invoke-WebRequest -Uri 'https://www.python.org/downloads/windows/' -UseBasicParsing",
-            "  # Extract latest version for the Windows 64-bit installer",
-            "  $latestVersionPattern = 'href=\"(/ftp/python/(\\d+\\.\\d+\\.\\d+)/python-\\2-amd64\\.exe)\".*?Download Windows installer \\(64-bit\\)'",
-            "  if ($downloadPage.Content -match $latestVersionPattern) {",
-            "    $installerRelativeUrl = $matches[1]",
-            "    $latestVersion = $matches[2]",
-            "    Write-Output \"Latest Python version found: $latestVersion\"",
-            "    $installerUrl = \"https://www.python.org$installerRelativeUrl\"",
+            "# Step 1: Retrieve the Python downloads page",
+            "Write-Output 'Fetching the Python downloads page content for Windows...'",
+            "$downloadPage = Invoke-WebRequest -Uri 'https://www.python.org/downloads/windows/' -UseBasicParsing",
+            "Write-Output 'Successfully retrieved the page content.'",
+            
+            "# Step 2: Isolate the Stable Releases section",
+            "Write-Output 'Isolating the Stable Releases section...'",
+            "$stableReleasesSection = ($downloadPage.Content -split '<h2>Stable Releases</h2>')[1] -split '</ul>' | Select-Object -First 1",
+            "Write-Output 'Stable Releases section isolated successfully.'",
+            
+            "# Step 3: Search for the specific Windows installer (64-bit) link",
+            "Write-Output 'Looking for the Windows installer (64-bit) link...'",
+            "$installerPattern = 'href=\"(https://www\\.python\\.org/ftp/python/\\d+\\.\\d+\\.\\d+/python-\\d+\\.\\d+\\.\\d+-amd64\\.exe)\">Windows installer \\(64-bit\\)'",
+            "if ($stableReleasesSection -match $installerPattern) {",
+            "    $installerUrl = $matches[1]",
+            "    $latestVersion = ($installerUrl -split '/')[4]",
+            "    Write-Output \"Found latest Python 64-bit installer URL: $installerUrl\"",
+            "    Write-Output \"Latest Python stable version identified: $latestVersion\"",
+                
+            "    # Step 4: Define download path and initiate download",
             "    $installerPath = \"C:\\Temp\\python-$latestVersion-amd64.exe\"",
-            "    # Download and install Python",
+            "    Write-Output \"Downloading Python $latestVersion to $installerPath...\"",
             "    Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath",
+            "    Write-Output 'Download completed successfully.'",
+                
+            "    # Step 5: Install Python silently",
+            "    Write-Output 'Starting silent installation of Python...'",
             "    Start-Process -FilePath $installerPath -ArgumentList '/quiet InstallAllUsers=1 PrependPath=1' -Wait",
             "    Write-Output \"Python $latestVersion installed successfully.\"",
-            "  } else {",
-            "    Write-Output 'Failed to detect the latest Python version. Skipping update.'",
-            "  }",
             "} else {",
-            "  Write-Output 'Python is not installed. Skipping update.'",
+            "    Write-Output 'Failed to detect the latest stable Python version download link for Windows. Please check the page structure or regex pattern.'",
             "}"
+          ]
+        }
+      }
+    },
+    {
+      "action": "aws:runCommand",
+      "name": "InstallLatestPythonLinux",
+      "precondition": {
+        "StringEquals": ["platformType", "Linux"]
+      },
+      "inputs": {
+        "DocumentName": "AWS-RunShellScript",
+        "Parameters": {
+          "commands": [
+            "# Step 1: Check if Python is installed",
+            "echo 'Checking for existing Python installation...'",
+            "if command -v python3 &> /dev/null; then",
+            "  echo 'Python is installed. Proceeding with update...'",
+            
+            "  # Step 2: Install necessary build dependencies",
+            "  echo 'Installing build dependencies...'",
+            "  sudo yum install -y gcc openssl-devel bzip2-devel libffi-devel || sudo apt-get install -y build-essential libssl-dev libffi-dev zlib1g-dev",
+            
+            "  # Step 3: Retrieve the latest Python version from the downloads page",
+            "  echo 'Fetching the list of available Python versions...'",
+            "  LATEST_PYTHON=$(curl -s https://www.python.org/ftp/python/ | grep -oP '\\d+\\.\\d+\\.\\d+' | sort -V | tail -n 1)",
+            "  echo \"Latest Python version identified: ${LATEST_PYTHON}\"",
+            
+            "  # Step 4: Download the latest Python source",
+            "  cd /tmp",
+            "  echo 'Downloading the latest Python source...'",
+            "  wget https://www.python.org/ftp/python/${LATEST_PYTHON}/Python-${LATEST_PYTHON}.tgz -O Python-${LATEST_PYTHON}.tgz",
+            "  echo 'Download completed.'",
+            
+            "  # Step 5: Extract and install Python",
+            "  echo 'Extracting Python source...'",
+            "  tar xzf Python-${LATEST_PYTHON}.tgz",
+            "  cd Python-${LATEST_PYTHON}",
+            "  echo 'Configuring and compiling Python...'",
+            "  ./configure --enable-optimizations",
+            "  make altinstall",
+            "  echo \"Python ${LATEST_PYTHON} installed successfully.\"",
+            "else",
+            "  echo 'Python is not installed. Skipping update.'",
+            "fi"
           ]
         }
       }
