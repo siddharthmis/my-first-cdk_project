@@ -1,44 +1,5 @@
-import urllib3
-import json
-import os
-import boto3
-from botocore.exceptions import ClientError
-
-# Environment variables for the SSM parameters
-CF_SITENAME = os.environ["CF_SITENAME"]
-CF_EMAIL = os.environ["CF_EMAIL"]
-CF_TOKEN = os.environ["CF_TOKEN"]
-attachments = "y"
-
-# AWS and HTTP clients
-ssm = boto3.client('ssm')
-http = urllib3.PoolManager()
-
-def lambda_handler(event, context):
-    print("Lambda execution started.")
-
-    # List of SSM parameter names to retrieve
-    parameter_names = [CF_SITENAME, CF_EMAIL, CF_TOKEN]
-
-    try:
-        # Retrieve parameter values
-        parameter_values = list(map(get_parameter, parameter_names))
-        site, user_name, api_token = parameter_values
-        print(f"Retrieved parameters for site: {site}")
-
-        # Run backup
-        conf_backup(account=site, username=user_name, token=api_token, attachments=attachments)
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        return {
-            'statusCode': 500,
-            'body': json.dumps("Error occurred while initiating the backup process.")
-        }
-    finally:
-        print("Lambda execution completed.")
-
 def conf_backup(account, username, token, attachments):
-    """ Initiates Confluence backup with error handling and logging. """
+    """ Initiates Confluence backup with logging to confirm successful initiation. """
     try:
         # Set up headers with basic authentication
         auth_header = urllib3.util.make_headers(basic_auth=f"{username}:{token}")
@@ -66,12 +27,34 @@ def conf_backup(account, username, token, attachments):
             headers=headers
         )
 
-        # Check if the backup request was successful
-        if backup_response.status != 200:
-            print(f"Backup request failed with status {backup_response.status}: {backup_response.data.decode('utf-8')}")
-            raise Exception("Backup initiation failed.")
+        # Log and check if the backup request was successful
+        print(f"Backup response status: {backup_response.status}")
+        print(f"Backup response data: {backup_response.data.decode('utf-8')}")
+        
+        # Confirm if backup initiation was successful
+        if backup_response.status == 200:
+            # Parse response data if necessary to check for specific success confirmation
+            response_data = json.loads(backup_response.data.decode('utf-8'))
+            
+            # Assuming a successful initiation response contains 'backupStarted': True or similar key
+            if response_data.get('backupStarted', False):
+                print("Backup successfully initiated.")
+                return {
+                    'statusCode': 200,
+                    'body': json.dumps("Backup initiated successfully.")
+                }
+            else:
+                print("Backup initiation response did not indicate success.")
+                return {
+                    'statusCode': 500,
+                    'body': json.dumps("Backup initiation did not succeed. Check Confluence response for details.")
+                }
         else:
-            print('Backup initiated successfully.')
+            print(f"Backup initiation failed with status {backup_response.status}.")
+            return {
+                'statusCode': backup_response.status,
+                'body': json.dumps(f"Backup initiation failed: {backup_response.data.decode('utf-8')}")
+            }
 
     except urllib3.exceptions.RequestError as e:
         print(f"Request error during backup initiation: {e}")
@@ -79,14 +62,3 @@ def conf_backup(account, username, token, attachments):
     except Exception as e:
         print(f"An unexpected error occurred in conf_backup: {e}")
         raise e
-
-def get_parameter(parameter_name):
-    """ Retrieves parameter from SSM with error handling and logging. """
-    try:
-        response = ssm.get_parameter(Name=parameter_name, WithDecryption=True)
-        parameter_value = response['Parameter']['Value']
-        print(f"Retrieved parameter: {parameter_name}")
-        return parameter_value
-    except ClientError as e:
-        print(f"Failed to retrieve parameter {parameter_name}: {e}")
-        raise Exception(f"Error retrieving parameter {parameter_name}")
