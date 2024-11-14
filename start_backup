@@ -1,64 +1,34 @@
-def conf_backup(account, username, token, attachments):
-    """ Initiates Confluence backup with logging to confirm successful initiation. """
-    try:
-        # Set up headers with basic authentication
-        auth_header = urllib3.util.make_headers(basic_auth=f"{username}:{token}")
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json"
-        }
-        headers.update(auth_header)
+import urllib3
+import json
 
-        # Construct the base URL for the Confluence instance
-        url = f'https://{account}.atlassian.net/wiki'
+# Initialize urllib3 PoolManager
+http = urllib3.PoolManager()
 
-        # Determine if backup should include attachments
-        json_data = {
-            "cbAttachments": "true" if attachments.lower() == "y" else "false",
-            "exportToCloud": "true"
-        }
+# Make the request
+response = http.request('GET', 'https://your-api-url.com/endpoint')
 
-        # Start backup request
-        print(f"Initiating backup at URL: {url}")
-        backup_response = http.request(
-            'POST',
-            f'{url}/rest/obm/1.0/runbackup',
-            body=json.dumps(json_data).encode('utf-8'),
-            headers=headers
-        )
-
-        # Log and check if the backup request was successful
-        print(f"Backup response status: {backup_response.status}")
-        print(f"Backup response data: {backup_response.data.decode('utf-8')}")
+# Check if request was successful
+if response.status == 200:
+    # Print status and headers
+    print("Status Code:", response.status)
+    print("Response Headers:", response.headers)
+    
+    # Inspect raw response data
+    raw_data = response.data
+    print("Raw Response Data:", raw_data)  # Directly print the raw bytes
+    
+    # If data is not empty, attempt decoding and parsing
+    if raw_data:
+        response_text = raw_data.decode('utf-8')
+        print("Decoded Response Text:", response_text)
         
-        # Confirm if backup initiation was successful
-        if backup_response.status == 200:
-            # Parse response data if necessary to check for specific success confirmation
-            response_data = json.loads(backup_response.data.decode('utf-8'))
-            
-            # Assuming a successful initiation response contains 'backupStarted': True or similar key
-            if response_data.get('backupStarted', False):
-                print("Backup successfully initiated.")
-                return {
-                    'statusCode': 200,
-                    'body': json.dumps("Backup initiated successfully.")
-                }
-            else:
-                print("Backup initiation response did not indicate success.")
-                return {
-                    'statusCode': 500,
-                    'body': json.dumps("Backup initiation did not succeed. Check Confluence response for details.")
-                }
-        else:
-            print(f"Backup initiation failed with status {backup_response.status}.")
-            return {
-                'statusCode': backup_response.status,
-                'body': json.dumps(f"Backup initiation failed: {backup_response.data.decode('utf-8')}")
-            }
-
-    except urllib3.exceptions.RequestError as e:
-        print(f"Request error during backup initiation: {e}")
-        raise Exception("Network error occurred during backup initiation.")
-    except Exception as e:
-        print(f"An unexpected error occurred in conf_backup: {e}")
-        raise e
+        # Try parsing as JSON
+        try:
+            response_json = json.loads(response_text)
+            print("Parsed JSON:", response_json)
+        except json.JSONDecodeError:
+            print("Response is not in JSON format.")
+    else:
+        print("Response body is empty.")
+else:
+    print(f"Request failed with status {response.status}")
