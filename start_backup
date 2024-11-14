@@ -1,0 +1,92 @@
+import urllib3
+import json
+import os
+import boto3
+from botocore.exceptions import ClientError
+
+# Environment variables for the SSM parameters
+CF_SITENAME = os.environ["CF_SITENAME"]
+CF_EMAIL = os.environ["CF_EMAIL"]
+CF_TOKEN = os.environ["CF_TOKEN"]
+attachments = "y"
+
+# AWS and HTTP clients
+ssm = boto3.client('ssm')
+http = urllib3.PoolManager()
+
+def lambda_handler(event, context):
+    print("Lambda execution started.")
+
+    # List of SSM parameter names to retrieve
+    parameter_names = [CF_SITENAME, CF_EMAIL, CF_TOKEN]
+
+    try:
+        # Retrieve parameter values
+        parameter_values = list(map(get_parameter, parameter_names))
+        site, user_name, api_token = parameter_values
+        print(f"Retrieved parameters for site: {site}")
+
+        # Run backup
+        conf_backup(account=site, username=user_name, token=api_token, attachments=attachments)
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps("Error occurred while initiating the backup process.")
+        }
+    finally:
+        print("Lambda execution completed.")
+
+def conf_backup(account, username, token, attachments):
+    """ Initiates Confluence backup with error handling and logging. """
+    try:
+        # Set up headers with basic authentication
+        auth_header = urllib3.util.make_headers(basic_auth=f"{username}:{token}")
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
+        headers.update(auth_header)
+
+        # Construct the base URL for the Confluence instance
+        url = f'https://{account}.atlassian.net/wiki'
+
+        # Determine if backup should include attachments
+        json_data = {
+            "cbAttachments": "true" if attachments.lower() == "y" else "false",
+            "exportToCloud": "true"
+        }
+
+        # Start backup request
+        print(f"Initiating backup at URL: {url}")
+        backup_response = http.request(
+            'POST',
+            f'{url}/rest/obm/1.0/runbackup',
+            body=json.dumps(json_data).encode('utf-8'),
+            headers=headers
+        )
+
+        # Check if the backup request was successful
+        if backup_response.status != 200:
+            print(f"Backup request failed with status {backup_response.status}: {backup_response.data.decode('utf-8')}")
+            raise Exception("Backup initiation failed.")
+        else:
+            print('Backup initiated successfully.')
+
+    except urllib3.exceptions.RequestError as e:
+        print(f"Request error during backup initiation: {e}")
+        raise Exception("Network error occurred during backup initiation.")
+    except Exception as e:
+        print(f"An unexpected error occurred in conf_backup: {e}")
+        raise e
+
+def get_parameter(parameter_name):
+    """ Retrieves parameter from SSM with error handling and logging. """
+    try:
+        response = ssm.get_parameter(Name=parameter_name, WithDecryption=True)
+        parameter_value = response['Parameter']['Value']
+        print(f"Retrieved parameter: {parameter_name}")
+        return parameter_value
+    except ClientError as e:
+        print(f"Failed to retrieve parameter {parameter_name}: {e}")
+        raise Exception(f"Error retrieving parameter {parameter_name}")
