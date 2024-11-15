@@ -1,0 +1,73 @@
+import boto3
+import logging
+
+# Initialize logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+ec2 = boto3.client('ec2')
+
+def lambda_handler(event, context):
+    try:
+        logger.info("Starting security group analysis and modification.")
+        
+        # Use paginator to ensure all security groups are retrieved
+        paginator = ec2.get_paginator('describe_security_groups')
+        page_iterator = paginator.paginate()
+
+        for page in page_iterator:
+            security_groups = page['SecurityGroups']
+            logger.info(f"Processing {len(security_groups)} security groups on this page.")
+
+            for sg in security_groups:
+                sg_id = sg['GroupId']
+                sg_name = sg.get('GroupName', 'Unnamed')
+                logger.info(f"Checking security group: {sg_name} ({sg_id})")
+
+                for perm in sg['IpPermissions']:
+                    for ip_range in perm.get('IpRanges', []):
+                        cidr = ip_range.get('CidrIp', '')
+                        if cidr == '0.0.0.0/0':
+                            logger.warning(f"Security group {sg_name} ({sg_id}) has an open IPv4 rule {cidr}.")
+                            update_cidr(sg_id, perm, '0.0.0.0/0', '10.0.0.0/8', 'IpRanges', 'CidrIp')
+
+                    for ip_range in perm.get('Ipv6Ranges', []):
+                        cidr = ip_range.get('CidrIpv6', '')
+                        if cidr == '::/0':
+                            logger.warning(f"Security group {sg_name} ({sg_id}) has an open IPv6 rule {cidr}.")
+                            update_cidr(sg_id, perm, '::/0', '10.0.0.0/8', 'Ipv6Ranges', 'CidrIpv6')
+
+        logger.info("Completed processing all security groups.")
+    except Exception as e:
+        logger.error(f"An error occurred: {str(e)}", exc_info=True)
+        raise
+
+def update_cidr(sg_id, perm, old_cidr, new_cidr, ip_range_key, cidr_key):
+    try:
+        # Modify only the specific CIDR in the permission
+        updated_perm = perm.copy()
+        for ip_range in updated_perm[ip_range_key]:
+            if ip_range[cidr_key] == old_cidr:
+                ip_range[cidr_key] = new_cidr
+
+        # Apply the updated permission to the security group
+        logger.info(f"Updating rule in security group {sg_id}: Changing {old_cidr} to {new_cidr}.")
+        ec2.authorize_security_group_ingress(
+            GroupId=sg_id,
+            IpPermissions=[updated_perm]
+        )
+
+        # Revoke the old permission
+        updated_perm = perm.copy()
+        for ip_range in updated_perm[ip_range_key]:
+            if ip_range[cidr_key] == new_cidr:
+                ip_range[cidr_key] = old_cidr
+
+        ec2.revoke_security_group_ingress(
+            GroupId=sg_id,
+            IpPermissions=[perm]
+        )
+
+        logger.info(f"Successfully updated CIDR in security group {sg_id} from {old_cidr} to {new_cidr}.")
+    except Exception as e:
+        logger.error(f"Failed to update CIDR for security group {sg_id}: {str(e)}", exc_info=True)
