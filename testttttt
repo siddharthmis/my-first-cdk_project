@@ -1,0 +1,22 @@
+import boto3
+
+# Provide the IAM user's credentials
+access_key = "YOUR_ACCESS_KEY_ID"
+secret_key = "YOUR_SECRET_ACCESS_KEY"
+
+# Create an STS client with the provided credentials
+sts_client = boto3.client(
+    'sts',
+    aws_access_key_id=access_key,
+    aws_secret_access_key=secret_key
+)
+
+# Get a session token
+response = sts_client.get_session_token(DurationSeconds=3600)
+
+# Extract and display the temporary credentials
+credentials = response['Credentials']
+print("Access Key ID:", credentials['AccessKeyId'])
+print("Secret Access Key:", credentials['SecretAccessKey'])
+print("Session Token:", credentials['SessionToken'])
+print("Expiration:", credentials['Expiration'])
