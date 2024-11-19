@@ -1,0 +1,139 @@
+import os
+import subprocess
+import urllib3
+import json
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logger = logging.getLogger()
+
+# Environment variables for Confluence API
+site = os.environ["CF_SITENAME"]
+username = os.environ["CF_EMAIL"]
+token = os.environ["CF_TOKEN"]
+
+# DFS credentials and paths
+DFS_SERVER = os.environ["DFS_SERVER"]        # e.g., "server"
+DFS_SHARE = os.environ["DFS_SHARE"]          # e.g., "share"
+DFS_USERNAME = os.environ["DFS_USERNAME"]    # Service account username
+DFS_PASSWORD = os.environ["DFS_PASSWORD"]    # Service account password
+DFS_PATH = os.environ["DFS_PATH"]            # Path inside the share, e.g., "/backups"
+
+http = urllib3.PoolManager()
+url = 'https://' + site + '.atlassian.net'
+
+# Build headers for Confluence API
+auth_header = urllib3.util.make_headers(basic_auth=f"{username}:{token}")
+headers = {
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+}
+headers.update(auth_header)
+
+
+def download_to_dfs(filename, local_path):
+    """
+    Use smbclient to upload a file to the DFS path.
+    """
+    dfs_path = f"//{DFS_SERVER}/{DFS_SHARE}/{DFS_PATH}/{filename}"
+    logger.info(f"Uploading {local_path} to DFS: {dfs_path}")
+    try:
+        smb_command = [
+            "smbclient", f"//{DFS_SERVER}/{DFS_SHARE}",
+            "-U", f"{DFS_USERNAME}%{DFS_PASSWORD}",
+            "-c", f"put {local_path} {DFS_PATH}/{filename}"
+        ]
+        result = subprocess.run(smb_command, check=True, text=True, capture_output=True)
+        logger.info(f"File uploaded to DFS successfully: {dfs_path}")
+        logger.debug(f"smbclient output: {result.stdout}")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Error using smbclient: {e.stderr}")
+        raise RuntimeError(f"Failed to upload file to DFS: {e.stderr}")
+
+
+def download_backup():
+    """
+    Download the Confluence backup and upload it to the DFS path.
+    """
+    logger.info("Starting Confluence backup download...")
+    confluence_backup_path = _get_backup_location()
+    filename = f"{site}_conf_backup.zip"
+    local_path = f"/tmp/{filename}"
+
+    logger.info(f"Downloading backup from Confluence to local path: {local_path}")
+    with http.request('GET', url + '/wiki/download/' + confluence_backup_path, headers=headers, preload_content=False) as response:
+        if response.status != 200:
+            logger.error(f"Failed to download backup: {response.status} - {response.data.decode('utf-8')}")
+            raise RuntimeError(f"Failed to download backup: HTTP {response.status}")
+        
+        total_size = int(response.headers.get('Content-Length', 0))
+        logger.info(f"Total file size: {total_size} bytes")
+        block_size = 4096
+        bytes_written = 0
+
+        try:
+            with open(local_path, 'wb') as out_file:
+                while True:
+                    data = response.read(block_size)
+                    if not data:
+                        break
+                    out_file.write(data)
+                    bytes_written += len(data)
+                    progress = bytes_written / total_size * 100
+                    logger.info(f"Download progress: {progress:.2f}%")
+            logger.info(f"Backup downloaded successfully to {local_path}")
+        except IOError as e:
+            logger.error(f"Error writing to local path: {local_path}")
+            raise RuntimeError(f"Error saving backup locally: {e}")
+
+    # Upload the file to the DFS path
+    download_to_dfs(filename, local_path)
+
+
+def _get_backup_location():
+    """
+    Fetch the backup file location from Confluence.
+    """
+    logger.info("Fetching backup file location from Confluence...")
+    response = http.request('GET', url + '/wiki/rest/obm/1.0/getprogress', headers=headers)
+    if response.status != 200:
+        logger.error(f"Failed to get backup progress: {response.status} - {response.data.decode('utf-8')}")
+        raise RuntimeError(f"Failed to fetch backup location: HTTP {response.status}")
+
+    progress_req = _http_response_to_json(response.data)
+    logger.debug(f"Backup progress response: {progress_req}")
+
+    try:
+        backup_location = progress_req['fileName']
+        logger.info(f"Backup file location obtained: {backup_location}")
+    except KeyError:
+        logger.error(f"Backup location not found in response: {progress_req}")
+        raise KeyError("Backup location not available in response")
+
+    return backup_location
+
+
+def _http_response_to_json(http_response):
+    """
+    Convert HTTP response data to JSON.
+    """
+    response_string = http_response.decode('utf-8')
+    try:
+        return json.loads(response_string)
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse JSON from response: {response_string}")
+        raise
+
+
+def lambda_handler(event, context):
+    """
+    Main Lambda function handler.
+    """
+    logger.info("Starting Lambda function...")
+    try:
+        download_backup()
+    except Exception as e:
+        logger.error(f"An error occurred: {str(e)}")
+        raise
+    logger.info("Lambda function completed successfully.")
