@@ -1,8 +1,7 @@
-import os
-import json
 import urllib3
-from smb.SMBConnection import SMBConnection
-from botocore.exceptions import ClientError
+import json
+import os
+import smbclient
 
 # Confluence configuration
 site = os.environ["CF_SITENAME"]
@@ -10,85 +9,76 @@ username = os.environ["CF_EMAIL"]
 token = os.environ["CF_TOKEN"]
 attachments = "y"
 http = urllib3.PoolManager()
+url = 'https://' + site + '.atlassian.net'
 
-# SMB connection details
-smb_server = os.environ["SMB_SERVER"]
-smb_share = os.environ["SMB_SHARE"]
+# SMB configuration
+smb_server = os.environ["SMB_SERVER"]  # e.g., "\\fsx-server-address"
+smb_share = os.environ["SMB_SHARE"]    # e.g., "shared-folder"
 smb_username = os.environ["SMB_USERNAME"]
 smb_password = os.environ["SMB_PASSWORD"]
-smb_domain = os.getenv("SMB_DOMAIN", "")  # Optional, set if required by your server
+fsx_path = os.path.join(smb_server, smb_share)
 
-def lambda_handler(event, context):
+# Build headers
+auth_header = urllib3.util.make_headers(basic_auth=f"{username}:{token}")
+headers = {
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+}
+headers.update(auth_header)
+
+def download_backup():
     try:
-        # Start the download and save it directly to the SMB share
-        download_backup_to_smb()
-    except Exception as e:
-        print(f"Error: {str(e)}")
-        raise
+        confluence_backup_path = _get_backup_location()
+        backup_filename = f"{site}_conf_backup.zip"
+        smb_file_path = os.path.join(fsx_path, backup_filename)
 
-def download_backup_to_smb():
-    confluence_backup_path = _get_backup_location()
-    backup_filename = f"{site}_conf_backup.zip"
-    smb_file_path = f"/{smb_share}/{backup_filename}"
+        # Configure SMB client credentials
+        smbclient.ClientConfig(username=smb_username, password=smb_password)
 
-    # Initiate SMB connection
-    smb_conn = SMBConnection(
-        smb_username, smb_password, "lambda-client", smb_server, domain=smb_domain, use_ntlm_v2=True
-    )
-    assert smb_conn.connect(smb_server, 445), "Failed to connect to SMB server"
-
-    try:
-        # Download backup from Confluence
-        print("Downloading backup from Confluence...")
-        response = http.request("GET", f"https://{site}.atlassian.net/wiki/download/{confluence_backup_path}",
-                                headers=_build_headers(), preload_content=False)
-
-        # Upload backup directly to SMB share
-        with smb_conn.open_file(smb_share, backup_filename, "wb") as smb_file:
-            total_size = int(response.headers.get("Content-Length", 0))
+        # Start download and write directly to SMB share
+        print(f"Downloading backup from Confluence to {smb_file_path}...")
+        with http.request('GET', url + '/wiki/download/' + confluence_backup_path, headers=headers, preload_content=False) as response:
+            total_size = int(response.headers.get('Content-Length', 0))
+            print(f"Total file size: {total_size} bytes")
             block_size = 4096
             bytes_written = 0
 
-            while True:
-                data = response.read(block_size)
-                if not data:
-                    break
-                smb_file.write(data)
-                bytes_written += len(data)
-                progress = bytes_written / total_size * 100
-                print(f"Progress: {progress:.2f}%")
+            with smbclient.open_file(smb_file_path, mode="wb") as smb_file:
+                while True:
+                    data = response.read(block_size)
+                    if not data:
+                        break
+                    smb_file.write(data)
+                    bytes_written += len(data)
+                    progress = bytes_written / total_size * 100
+                    print(f"Progress: {progress:.2f}%")
 
-        print(f"Backup successfully saved to SMB share: {smb_file_path}")
+        print(f"Backup successfully saved to {smb_file_path}")
+        return smb_file_path
 
     except Exception as e:
         print(f"Error during backup download or SMB upload: {str(e)}")
         raise
 
-    finally:
-        smb_conn.close()
-
 def _get_backup_location():
-    response = http.request("GET", f"https://{site}.atlassian.net/wiki/rest/obm/1.0/getprogress",
-                            headers=_build_headers())
-    progress_req = _http_response_to_json(response.data)
-
     try:
-        backup_location = progress_req["fileName"]
+        response = http.request("GET", url + '/wiki/rest/obm/1.0/getprogress', headers=headers)
+        progress_req = _http_response_to_json(response.data)
+
+        backup_location = progress_req.get("fileName")
+        if not backup_location:
+            raise KeyError("Backup location not found in response.")
+        
         print(f"Backup location: {backup_location}")
         return backup_location
-    except KeyError:
-        print(f"Unexpected response while fetching backup location: {progress_req}")
-        raise RuntimeError("Failed to retrieve backup location")
+
+    except Exception as e:
+        print(f"Error fetching backup location: {str(e)}")
+        raise
 
 def _http_response_to_json(http_response):
     response_string = http_response.decode("utf-8")
     return json.loads(response_string)
 
-def _build_headers():
-    auth_header = urllib3.util.make_headers(basic_auth=f"{username}:{token}")
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-    }
-    headers.update(auth_header)
-    return headers
+# Trigger the download
+download_backup()
