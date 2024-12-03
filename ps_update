@@ -1,0 +1,26 @@
+# Ensure PowerShellGet module is available
+Install-PackageProvider -Name NuGet -Force -Scope CurrentUser
+Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+
+# Install the PSWindowsUpdate module if not installed
+If (-Not (Get-Module -Name PSWindowsUpdate -ListAvailable)) {
+    Install-Module -Name PSWindowsUpdate -Force -Scope CurrentUser
+    Import-Module -Name PSWindowsUpdate
+}
+
+# Import the module
+Import-Module -Name PSWindowsUpdate
+
+# Enable Microsoft Update
+Add-WUServiceManager -MicrosoftUpdate
+
+# Search for updates that include PowerShell in their title
+$PowerShellUpdates = Get-WindowsUpdate -MicrosoftUpdate | Where-Object {$_.Title -like "*PowerShell*"}
+
+# Install available updates for PowerShell
+If ($PowerShellUpdates) {
+    Install-WindowsUpdate -MicrosoftUpdate -AcceptAll -AutoReboot
+    Write-Output "PowerShell updates installed successfully."
+} Else {
+    Write-Output "No PowerShell updates are available."
+}
