@@ -1,91 +1,151 @@
 import boto3
 import json
-from datetime import datetime
-from service_modules import alb_metrics, aurora_metrics, ec2_metrics, fsx_metrics, macie_metrics, neptune_metrics, opensearch_metrics, outposts_metrics, redshift_metrics
+import logging
+
+# Initialize logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 # Initialize AWS clients
+cloudwatch = boto3.client('cloudwatch')
 dynamodb = boto3.client('dynamodb')
 
-# Function to update or insert metrics in DynamoDB
-def update_or_insert_metric_in_dynamodb(resource_id, resource_type, metric_name, namespace, threshold, statistic, comparison_operator, period, datapoints_to_alarm, evaluation_periods, dimensions):
-    try:
-        # Use update_item to either update the existing row or insert a new one
-        dynamodb.update_item(
-            TableName='ResourceMetrics',
-            Key={
-                'ResourceID': {'S': resource_id},
-                'MetricName': {'S': metric_name}
-            },
-            UpdateExpression="""
-                SET 
-                    ResourceType = :resource_type,
-                    Namespace = :namespace,
-                    Threshold = :threshold,
-                    Statistic = :statistic,
-                    ComparisonOperator = :comparison_operator,
-                    Period = :period,
-                    DatapointsToAlarm = :datapoints_to_alarm,
-                    EvaluationPeriods = :evaluation_periods,
-                    Dimensions = :dimensions
-            """,
-            ExpressionAttributeValues={
-                ':resource_type': {'S': resource_type},
-                ':namespace': {'S': namespace},
-                ':threshold': {'N': str(threshold)},
-                ':statistic': {'S': statistic},
-                ':comparison_operator': {'S': comparison_operator},
-                ':period': {'N': str(period)},
-                ':datapoints_to_alarm': {'N': str(datapoints_to_alarm)},
-                ':evaluation_periods': {'N': str(evaluation_periods)},
-                ':dimensions': {'S': json.dumps(dimensions)}  # Store dimensions as JSON string
-            },
-            ReturnValues="ALL_NEW"
-        )
-        print(f"Successfully updated or inserted entry for ResourceID {resource_id} and MetricName {metric_name}.")
-    except dynamodb.exceptions.ConditionalCheckFailedException:
-        print(f"Row already exists for ResourceID {resource_id} and MetricName {metric_name}. Updating the row.")
-    except Exception as e:
-        print(f"Error updating or inserting entry in DynamoDB for ResourceID {resource_id}: {e}")
 
-# Load default metrics from a JSON configuration file
-def load_default_metrics():
+def get_existing_alarm(alarm_name):
     try:
-        with open('default_metrics.json') as f:
-            default_metrics = json.load(f)
-        return default_metrics
+        response = cloudwatch.describe_alarms(AlarmNames=[alarm_name])
+        if response['MetricAlarms']:
+            return response['MetricAlarms'][0]
+        else:
+            return None
     except Exception as e:
-        print(f"Error loading default metrics: {e}")
-        return {}
+        logger.error(f"Error fetching existing alarm: {alarm_name}: {e}")
+        return None
 
-# Main Lambda handler function
+
+def create_or_update_alarm(resource_id, resource_type, metric_name, namespace, threshold, dimensions, statistic, period, datapoints_to_alarm, evaluation_periods, comparison_operator):
+    # Construct the alarm name
+    alarm_name = f"{resource_type}_{resource_id}_{metric_name}_Alarm"
+    
+    # Check if the alarm already exists
+    existing_alarm = get_existing_alarm(alarm_name)
+
+    # If alarm exists, check parameters for updates
+    if existing_alarm:
+        logger.info(f"Existing alarm found: {alarm_name}. Checking for updates...")
+
+        # Standardize dimensions for comparison
+        sorted_existing_dimensions = sorted(existing_alarm.get('Dimensions', []), key=lambda d: d['Name'])
+        sorted_new_dimensions = sorted(dimensions, key=lambda d: d['Name'])
+
+        # Check if alarm needs updating
+        if (existing_alarm['Threshold'] != threshold or
+            existing_alarm['Period'] != period or
+            existing_alarm['EvaluationPeriods'] != evaluation_periods or
+            existing_alarm['DatapointsToAlarm'] != datapoints_to_alarm or
+            existing_alarm['ComparisonOperator'] != comparison_operator or
+            sorted_existing_dimensions != sorted_new_dimensions):
+            
+            logger.info(f"Updating existing alarm: {alarm_name}")
+            try:
+                # Update alarm if parameters have changed
+                cloudwatch.put_metric_alarm(
+                    AlarmName=alarm_name,
+                    MetricName=metric_name,
+                    Namespace=namespace,
+                    Dimensions=dimensions,
+                    Statistic=statistic,
+                    Period=period,
+                    EvaluationPeriods=evaluation_periods,
+                    DatapointsToAlarm=datapoints_to_alarm,
+                    Threshold=threshold,
+                    ComparisonOperator=comparison_operator,
+                    ActionsEnabled=True,
+                    AlarmActions=[],  # Add your SNS topic ARN or other actions here if needed
+                    Tags=[
+                        {'Key': 'Owner', 'Value': 'team-owner'},
+                        {'Key': 'ownedBy', 'Value': 'cloudwatch-monitoring'}
+                    ]
+                )
+                logger.info(f"Alarm updated: {alarm_name} for resource: {resource_id}")
+            except Exception as e:
+                logger.error(f"Error updating alarm: {alarm_name} for resource: {resource_id}: {e}")
+                raise
+        else:
+            logger.info(f"No updates needed for alarm: {alarm_name}")
+    else:
+        # Create the alarm if it does not exist
+        logger.info(f"Creating new alarm: {alarm_name}")
+        try:
+            cloudwatch.put_metric_alarm(
+                AlarmName=alarm_name,
+                MetricName=metric_name,
+                Namespace=namespace,
+                Dimensions=dimensions,
+                Statistic=statistic,
+                Period=period,
+                EvaluationPeriods=evaluation_periods,
+                DatapointsToAlarm=datapoints_to_alarm,
+                Threshold=threshold,
+                ComparisonOperator=comparison_operator,
+                ActionsEnabled=True,
+                AlarmActions=[],  # Add your SNS topic ARN or other actions here if needed
+                Tags=[
+                    {'Key': 'Owner', 'Value': 'team-owner'},
+                    {'Key': 'ownedBy', 'Value': 'cloudwatch-monitoring'}
+                ]
+            )
+            logger.info(f"Alarm created: {alarm_name} for resource: {resource_id}")
+        except Exception as e:
+            logger.error(f"Error creating alarm: {alarm_name} for resource: {resource_id}: {e}")
+            raise
+
+
 def lambda_handler(event, context):
-    # Load default metrics configuration
-    default_metrics = load_default_metrics()
-
-    if not default_metrics:
+    try:
+        # Scan the DynamoDB table to get all metric configurations
+        response = dynamodb.scan(TableName='ResourceMetrics')
+    except Exception as e:
+        logger.error(f"Failed to scan DynamoDB table: {e}")
         return {
             'statusCode': 500,
-            'body': json.dumps('Failed to load default metrics')
+            'body': json.dumps('Error scanning DynamoDB table')
         }
 
-    # Collect metrics for each service and store them in DynamoDB
-    try:
-        alb_metrics.collect_metrics(update_or_insert_metric_in_dynamodb, default_metrics['ALB'])
-        aurora_metrics.collect_metrics(update_or_insert_metric_in_dynamodb, default_metrics['Aurora'])
-        ec2_metrics.collect_metrics(update_or_insert_metric_in_dynamodb, default_metrics['EC2'])
-        fsx_metrics.collect_metrics(update_or_insert_metric_in_dynamodb, default_metrics['FSx'])
-        macie_metrics.collect_metrics(update_or_insert_metric_in_dynamodb, default_metrics['Macie'])
-        neptune_metrics.collect_metrics(update_or_insert_metric_in_dynamodb, default_metrics['Neptune'])
-        opensearch_metrics.collect_metrics(update_or_insert_metric_in_dynamodb, default_metrics['OpenSearch'])
-        outposts_metrics.collect_metrics(update_or_insert_metric_in_dynamodb, default_metrics['Outposts'])
-        redshift_metrics.collect_metrics(update_or_insert_metric_in_dynamodb, default_metrics['Redshift'])
+    # Iterate over each metric configuration in the DynamoDB table
+    for item in response['Items']:
+        try:
+            resource_id = item['ResourceID']['S']
+            resource_type = item['ResourceType']['S']
+            metric_name = item['MetricName']['S']
+            namespace = item['Namespace']['S']
+            dimensions = json.loads(item['Dimensions']['S'])  # Parse Dimensions field
+            threshold = float(item['Threshold']['N'])
+            period = int(item['Period']['N'])
+            datapoints_to_alarm = int(item['DatapointsToAlarm']['N'])
+            evaluation_periods = int(item['EvaluationPeriods']['N'])
+            comparison_operator = item['ComparisonOperator']['S']
+            statistic = item['Statistic']['S']
 
-        print("Metrics collected and inserted/updated in DynamoDB successfully.")
+            # Create or update CloudWatch alarm
+            create_or_update_alarm(
+                resource_id=resource_id,
+                resource_type=resource_type,
+                metric_name=metric_name,
+                namespace=namespace,
+                dimensions=dimensions,
+                threshold=threshold,
+                statistic=statistic,
+                period=period,
+                datapoints_to_alarm=datapoints_to_alarm,
+                evaluation_periods=evaluation_periods,
+                comparison_operator=comparison_operator
+            )
 
-    except Exception as e:
-        print(f"Error collecting metrics or inserting into DynamoDB: {e}")
+        except Exception as e:
+            logger.error(f"Error processing item from DynamoDB: {item} - {e}")
 
     return {
         'statusCode': 200,
-        'body': json.dumps('Metrics collection and DynamoDB update completed')
+        'body': json.dumps('Alarms processed successfully')
     }
