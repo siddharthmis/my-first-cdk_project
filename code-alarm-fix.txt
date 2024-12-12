@@ -6,119 +6,82 @@ from service_modules import alb_metrics, aurora_metrics, ec2_metrics, fsx_metric
 # Initialize AWS clients
 dynamodb = boto3.client('dynamodb')
 
-# Function to check if an entry already exists in DynamoDB
-def check_existing_entry(resource_id, metric_name):
+# Function to update or insert metrics in DynamoDB
+def update_or_insert_metric_in_dynamodb(resource_id, resource_type, metric_name, namespace, threshold, statistic, comparison_operator, period, datapoints_to_alarm, evaluation_periods, dimensions):
     try:
-        response = dynamodb.get_item(
+        # Use update_item to either update the existing row or insert a new one
+        dynamodb.update_item(
             TableName='ResourceMetrics',
             Key={
                 'ResourceID': {'S': resource_id},
                 'MetricName': {'S': metric_name}
-            }
+            },
+            UpdateExpression="""
+                SET 
+                    ResourceType = :resource_type,
+                    Namespace = :namespace,
+                    Threshold = :threshold,
+                    Statistic = :statistic,
+                    ComparisonOperator = :comparison_operator,
+                    Period = :period,
+                    DatapointsToAlarm = :datapoints_to_alarm,
+                    EvaluationPeriods = :evaluation_periods,
+                    Dimensions = :dimensions
+            """,
+            ExpressionAttributeValues={
+                ':resource_type': {'S': resource_type},
+                ':namespace': {'S': namespace},
+                ':threshold': {'N': str(threshold)},
+                ':statistic': {'S': statistic},
+                ':comparison_operator': {'S': comparison_operator},
+                ':period': {'N': str(period)},
+                ':datapoints_to_alarm': {'N': str(datapoints_to_alarm)},
+                ':evaluation_periods': {'N': str(evaluation_periods)},
+                ':dimensions': {'S': json.dumps(dimensions)}  # Store dimensions as JSON string
+            },
+            ReturnValues="ALL_NEW"
         )
-        return response.get('Item', None)
+        print(f"Successfully updated or inserted entry for ResourceID {resource_id} and MetricName {metric_name}.")
+    except dynamodb.exceptions.ConditionalCheckFailedException:
+        print(f"Row already exists for ResourceID {resource_id} and MetricName {metric_name}. Updating the row.")
     except Exception as e:
-        print(f"Error checking existing entry in DynamoDB: {e}")
-        return None
-
-# Function to compare dimensions
-def are_dimensions_different(existing_dimensions, new_dimensions):
-    try:
-        # Convert both dimensions to sets of tuples for comparison
-        existing_set = set((dim['Name'], dim['Value']) for dim in json.loads(existing_dimensions))
-        new_set = set((dim['Name'], dim['Value']) for dim in new_dimensions)
-        return existing_set != new_set
-    except Exception as e:
-        print(f"Error comparing dimensions: {e}")
-        return True
-
-# Function to insert or update metrics in DynamoDB
-def put_metric_to_dynamodb(resource_id, resource_type, metric_name, namespace, threshold, statistic, comparison_operator, period, datapoints_to_alarm, evaluation_periods, dimensions):
-    # Check if the entry already exists
-    existing_item = check_existing_entry(resource_id, metric_name)
-    
-    if existing_item:
-        # Check if the data is the same as the current entry in DynamoDB
-        is_up_to_date = (
-            float(existing_item['Threshold']['N']) == threshold and
-            int(existing_item['Period']['N']) == period and
-            int(existing_item['DatapointsToAlarm']['N']) == datapoints_to_alarm and
-            int(existing_item['EvaluationPeriods']['N']) == evaluation_periods and
-            existing_item['ComparisonOperator']['S'] == comparison_operator and
-            existing_item['Statistic']['S'] == statistic and
-            not are_dimensions_different(existing_item['Dimensions']['S'], dimensions)
-        )
-        
-        if is_up_to_date:
-            # Log only once per metric/resource combination
-            if not existing_item.get('UpToDateLogged'):
-                print(f"Entry for {resource_id} with metric {metric_name} already exists and is up-to-date.")
-                dynamodb.update_item(
-                    TableName='ResourceMetrics',
-                    Key={
-                        'ResourceID': {'S': resource_id},
-                        'MetricName': {'S': metric_name}
-                    },
-                    UpdateExpression="SET UpToDateLogged = :val",
-                    ExpressionAttributeValues={':val': {'BOOL': True}}
-                )
-            return  # Skip inserting into DynamoDB if the entry is already up-to-date
-        
-        else:
-            # If data is different, log that the entry will be updated
-            print(f"Entry for {resource_id} with metric {metric_name} exists but needs an update.")
-
-    # Insert or update the item in DynamoDB
-    try:
-        dynamodb.put_item(
-            TableName='ResourceMetrics',
-            Item={
-                'ResourceID': {'S': resource_id},
-                'ResourceType': {'S': resource_type},
-                'MetricName': {'S': metric_name},
-                'Namespace': {'S': namespace},
-                'Threshold': {'N': str(threshold)},
-                'Statistic': {'S': statistic},
-                'ComparisonOperator': {'S': comparison_operator},
-                'Period': {'N': str(period)},
-                'DatapointsToAlarm': {'N': str(datapoints_to_alarm)},
-                'EvaluationPeriods': {'N': str(evaluation_periods)},
-                'Dimensions': {'S': json.dumps(dimensions)},  # Store dimensions as JSON string
-                'UpToDateLogged': {'BOOL': False}  # Reset the flag after update or insert
-            }
-        )
-        print(f"Inserted/Updated entry for {resource_id} with metric {metric_name} in DynamoDB.")
-    except Exception as e:
-        print(f"Error inserting/updating entry in DynamoDB: {e}")
+        print(f"Error updating or inserting entry in DynamoDB for ResourceID {resource_id}: {e}")
 
 # Load default metrics from a JSON configuration file
 def load_default_metrics():
-    with open('default_metrics.json') as f:
-        default_metrics = json.load(f)
-    return default_metrics
+    try:
+        with open('default_metrics.json') as f:
+            default_metrics = json.load(f)
+        return default_metrics
+    except Exception as e:
+        print(f"Error loading default metrics: {e}")
+        return {}
 
 # Main Lambda handler function
 def lambda_handler(event, context):
     # Load default metrics configuration
     default_metrics = load_default_metrics()
-    
-    # Get the current time for the metric collection period
-    current_time = datetime.utcnow()
+
+    if not default_metrics:
+        return {
+            'statusCode': 500,
+            'body': json.dumps('Failed to load default metrics')
+        }
 
     # Collect metrics for each service and store them in DynamoDB
     try:
-        alb_metrics.collect_metrics(put_metric_to_dynamodb, default_metrics['ALB'])
-        aurora_metrics.collect_metrics(put_metric_to_dynamodb, default_metrics['Aurora'])
-        ec2_metrics.collect_metrics(put_metric_to_dynamodb, default_metrics['EC2'])
-        fsx_metrics.collect_metrics(put_metric_to_dynamodb, default_metrics['FSx'])
-        macie_metrics.collect_metrics(put_metric_to_dynamodb, default_metrics['Macie'])
-        neptune_metrics.collect_metrics(put_metric_to_dynamodb, default_metrics['Neptune'])
-        opensearch_metrics.collect_metrics(put_metric_to_dynamodb, default_metrics['OpenSearch'])
-        outposts_metrics.collect_metrics(put_metric_to_dynamodb, default_metrics['Outposts'])
-        redshift_metrics.collect_metrics(put_metric_to_dynamodb, default_metrics['Redshift'])
-        
+        alb_metrics.collect_metrics(update_or_insert_metric_in_dynamodb, default_metrics['ALB'])
+        aurora_metrics.collect_metrics(update_or_insert_metric_in_dynamodb, default_metrics['Aurora'])
+        ec2_metrics.collect_metrics(update_or_insert_metric_in_dynamodb, default_metrics['EC2'])
+        fsx_metrics.collect_metrics(update_or_insert_metric_in_dynamodb, default_metrics['FSx'])
+        macie_metrics.collect_metrics(update_or_insert_metric_in_dynamodb, default_metrics['Macie'])
+        neptune_metrics.collect_metrics(update_or_insert_metric_in_dynamodb, default_metrics['Neptune'])
+        opensearch_metrics.collect_metrics(update_or_insert_metric_in_dynamodb, default_metrics['OpenSearch'])
+        outposts_metrics.collect_metrics(update_or_insert_metric_in_dynamodb, default_metrics['Outposts'])
+        redshift_metrics.collect_metrics(update_or_insert_metric_in_dynamodb, default_metrics['Redshift'])
+
         print("Metrics collected and inserted/updated in DynamoDB successfully.")
-        
+
     except Exception as e:
         print(f"Error collecting metrics or inserting into DynamoDB: {e}")
 
