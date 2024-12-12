@@ -119,7 +119,8 @@ def lambda_handler(event, context):
             resource_type = item['ResourceType']['S']
             metric_name = item['MetricName']['S']
             namespace = item['Namespace']['S']
-            dimensions = json.loads(item['Dimensions']['S'])  # Parse Dimensions field
+            dimensions = json.loads(item['Dimensions']['S']) if isinstance(item['Dimensions']['S'], str) else item['Dimensions']['S']
+
             threshold = float(item['Threshold']['N'])
             period = int(item['Period']['N'])
             datapoints_to_alarm = int(item['DatapointsToAlarm']['N'])
