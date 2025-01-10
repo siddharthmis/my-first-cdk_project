@@ -982,3 +982,19 @@ Copy code
   "Resource": "*"
 }
 Let me know if the issue persists or if you'd like to review specific error messages from the logs!
+
+
+
+"sqlserver": {
+  "metrics_collection_interval": 60,
+  "connection_string": "Server=nonprod-sql.domain.com;Database=nonprod;User Id=your_db_user;Password=your_db_password;",
+  "metrics": [
+    "SQLServer:General Statistics/User Connections",
+    "SQLServer:SQL Statistics/Batch Requests/sec",
+    "SQLServer:SQL Statistics/SQL Compilations/sec",
+    "SQLServer:SQL Statistics/SQL Re-Compilations/sec",
+    "SQLServer:Locks/Lock Waits/sec",
+    "SQLServer:Buffer Manager/Buffer cache hit ratio",
+    "SQLServer:Buffer Manager/Checkpoint pages/sec"
+  ]
+}
