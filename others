@@ -184,3 +184,22 @@ Recommendations
 Using AWS Secrets Manager or Parameter Store is the most secure and scalable way to manage credentials. These methods also simplify credential rotation without requiring configuration changes in the CloudWatch Agent.
 
 Let me know if you'd like further help with any of these approaches!
+
+
+
+
+
+
+{
+  "logs": {
+    "log_stream_name": "{instance_id}",
+    "log_group_name": "CloudWatchAgentLogs",
+    "log_directory": "C:/ProgramData/Amazon/AmazonCloudWatchAgent/Logs",
+    "file": {
+      "file_path": "C:/ProgramData/Amazon/AmazonCloudWatchAgent/Logs/agent.log",
+      "log_group_name": "CloudWatchAgentLogGroup",
+      "log_stream_name": "agent-{instance_id}",
+      "timezone": "UTC"
+    }
+  }
+}
