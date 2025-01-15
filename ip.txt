@@ -11,117 +11,57 @@ sns_client = boto3.client('sns')
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# Get SNS topic ARN and threshold from environment variables
+# Environment variables
 SNS_TOPIC_ARN = os.environ.get('SNS_TOPIC_ARN')
-THRESHOLD_PERCENT = int(os.environ.get('THRESHOLD_PERCENT', '80'))  # Default threshold of 80%
+IP_THRESHOLD_PERCENT = int(os.environ.get('IP_THRESHOLD_PERCENT', '80'))  # Default subnet IP threshold is 80%
+ENI_THRESHOLD = int(os.environ.get('ENI_THRESHOLD', '15'))  # Default threshold for ENIs in available state is 15
 
-def lambda_handler(event, context):
-    try:
-        # Get all subnets
-        response = ec2_client.describe_subnets()
-        subnets = response.get('Subnets', [])
-        
-        if not subnets:
-            logger.warning("No subnets found in the VPC.")
-            return {
-                'statusCode': 200,
-                'body': json.dumps('No subnets found.')
-            }
-
-        # Process each subnet
-        for subnet in subnets:
-            try:
-                subnet_id = subnet['SubnetId']
-                available_ips = subnet['AvailableIpAddressCount']
-                cidr_block = subnet['CidrBlock']
-                
-                # Calculate the total number of IPs (subtract 5 for reserved IPs)
-                total_ips = 2**(32 - int(cidr_block.split('/')[1])) - 5
-
-                if total_ips <= 0:
-                    logger.warning(f"Skipping invalid subnet {subnet_id} with CIDR {cidr_block}.")
-                    continue
-
-                # Calculate the percentage of used IPs
-                used_ip_percent = ((total_ips - available_ips) / total_ips) * 100
-
-                logger.info(f"Subnet {subnet_id}: {used_ip_percent:.2f}% IPs used.")
-
-                # Send an alert if the usage exceeds the threshold
-                if used_ip_percent >= THRESHOLD_PERCENT:
-                    message = (
-                        f"Alert! The subnet {subnet_id} is running out of IP addresses.\n"
-                        f"Available IPs: {available_ips}\n"
-                        f"Used IP percentage: {used_ip_percent:.2f}%\n"
-                        f"CIDR Block: {cidr_block}"
-                    )
-                    sns_client.publish(
-                        TopicArn=SNS_TOPIC_ARN,
-                        Message=message,
-                        Subject=f'VPC Subnet {subnet_id} IP Alert'
-                    )
-                    logger.info(f"Alert sent for subnet {subnet_id}.")
-                else:
-                    logger.info(f"Subnet {subnet_id} is within safe limits with {used_ip_percent:.2f}% usage.")
-            
-            except KeyError as e:
-                logger.error(f"Missing expected data in subnet {subnet.get('SubnetId', 'Unknown')} - {str(e)}")
-            except Exception as e:
-                logger.error(f"Error processing subnet {subnet.get('SubnetId', 'Unknown')}: {str(e)}")
-
-        return {
-            'statusCode': 200,
-            'body': json.dumps('Subnet IP check completed.')
-        }
-    
-    except Exception as e:
-        logger.error(f"Failed to retrieve or process subnets: {str(e)}")
-        return {
-            'statusCode': 500,
-            'body': json.dumps('An error occurred while checking subnets.')
-        }
-
-
-
-#################################################################
-
-import boto3
-import os
-import json
-import logging
-
-# Initialize EC2 and SNS clients
-ec2_client = boto3.client('ec2')
-sns_client = boto3.client('sns')
-
-# Setup logging
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-# Get SNS topic ARN and threshold from environment variables
-SNS_TOPIC_ARN = os.environ.get('SNS_TOPIC_ARN')
-THRESHOLD_PERCENT = int(os.environ.get('THRESHOLD_PERCENT', '80'))  # Default threshold of 80%
 
 def get_subnet_name(subnet):
-    # Retrieve the Name tag from the subnet tags
+    """Retrieve the Name tag from the subnet tags."""
     tags = subnet.get('Tags', [])
     for tag in tags:
         if tag['Key'] == 'Name':
             return tag['Value']
     return 'N/A'  # Return 'N/A' if no Name tag is found
 
-def lambda_handler(event, context):
+
+def monitor_available_enis():
+    """Monitor ENIs in 'available' state and send alerts if the count exceeds the threshold."""
+    try:
+        logger.info("Checking available ENIs...")
+        response = ec2_client.describe_network_interfaces(Filters=[{'Name': 'status', 'Values': ['available']}])
+        available_enis = response.get('NetworkInterfaces', [])
+        eni_count = len(available_enis)
+
+        if eni_count > ENI_THRESHOLD:
+            message = (
+                f"Alert! There are {eni_count} ENIs in the 'available' state.\n"
+                f"This exceeds the threshold of {ENI_THRESHOLD} ENIs."
+            )
+            sns_client.publish(
+                TopicArn=SNS_TOPIC_ARN,
+                Message=message,
+                Subject='High Number of Available ENIs Alert'
+            )
+            logger.info(f"Alert sent for {eni_count} available ENIs.")
+        else:
+            logger.info(f"Number of available ENIs ({eni_count}) is within the safe limit.")
+    except Exception as e:
+        logger.error(f"Failed to check ENIs in available state: {str(e)}")
+
+
+def monitor_subnet_ip_usage():
+    """Monitor subnet IP usage and send alerts if usage exceeds the threshold."""
     try:
         # Get all VPCs
+        logger.info("Checking subnet IP usage...")
         vpcs_response = ec2_client.describe_vpcs()
         vpcs = vpcs_response.get('Vpcs', [])
 
         if not vpcs:
             logger.warning("No VPCs found in the account.")
-            return {
-                'statusCode': 200,
-                'body': json.dumps('No VPCs found.')
-            }
+            return
 
         # Iterate through each VPC
         for vpc in vpcs:
@@ -157,7 +97,7 @@ def lambda_handler(event, context):
                     logger.info(f"VPC {vpc_id}, Subnet {subnet_id} (Name: {subnet_name}): {used_ip_percent:.2f}% IPs used.")
 
                     # Send an alert if the usage exceeds the threshold
-                    if used_ip_percent >= THRESHOLD_PERCENT:
+                    if used_ip_percent >= IP_THRESHOLD_PERCENT:
                         message = (
                             f"Alert! The subnet {subnet_name} ({subnet_id}) in VPC {vpc_id} is running out of IP addresses.\n"
                             f"Available IPs: {available_ips}\n"
@@ -178,14 +118,22 @@ def lambda_handler(event, context):
                 except Exception as e:
                     logger.error(f"Error processing subnet {subnet.get('SubnetId', 'Unknown')} in VPC {vpc_id}: {str(e)}")
 
-        return {
-            'statusCode': 200,
-            'body': json.dumps('Subnet IP check completed for all VPCs and subnets.')
-        }
-    
     except Exception as e:
         logger.error(f"Failed to retrieve or process VPCs/subnets: {str(e)}")
-        return {
-            'statusCode': 500,
-            'body': json.dumps('An error occurred while checking subnets across all VPCs.')
-        }
+
+
+def lambda_handler(event, context):
+    """Main Lambda handler function."""
+    logger.info("Starting subnet and ENI monitoring...")
+    
+    # Monitor ENIs and log separately
+    monitor_available_enis()
+    
+    # Monitor subnet IP usage and log separately
+    monitor_subnet_ip_usage()
+    
+    logger.info("Monitoring completed successfully.")
+    return {
+        'statusCode': 200,
+        'body': json.dumps('Subnet and ENI monitoring completed successfully.')
+    }
