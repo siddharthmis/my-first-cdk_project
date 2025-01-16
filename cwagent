@@ -1,0 +1,96 @@
+schemaVersion: "2.2"
+description: "Check and restart the CloudWatch Agent service on both Linux and Windows instances."
+parameters:
+  service_name:
+    type: "String"
+    description: "The name of the service to check"
+    default: "amazon-cloudwatch-agent"
+mainSteps:
+  # Step 1: Detect the platform
+  - name: detectPlatform
+    action: "aws:runCommand"
+    inputs:
+      DocumentName: "AWS-RunShellScript"
+      Parameters:
+        commands:
+          - |
+            if [[ "$(uname -s)" == "Linux" ]]; then
+              echo "Linux"
+            else
+              echo "Windows"
+            fi
+      InstanceIds: "{{TARGET_INSTANCE_IDS}}"
+    outputs:
+      - Name: platform
+        Selector: "$.StandardOutputContent"
+        Type: StringList
+
+  # Step 2: Execute Linux commands if the instance is Linux
+  - name: checkAndRestartLinux
+    action: "aws:runCommand"
+    onFailure: "step:notifyFailure"
+    isCritical: false
+    inputs:
+      DocumentName: "AWS-RunShellScript"
+      Parameters:
+        commands:
+          - |
+            SERVICE_STATUS=$(systemctl is-active {{service_name}})
+            if [[ $SERVICE_STATUS != "active" ]]; then
+              echo "Service {{service_name}} is not running. Restarting..."
+              systemctl restart {{service_name}}
+              if [[ $(systemctl is-active {{service_name}}) == "active" ]]; then
+                echo "Service {{service_name}} restarted successfully."
+              else
+                echo "Failed to restart service {{service_name}}."
+                exit 1
+              fi
+            else
+              echo "Service {{service_name}} is running."
+            fi
+      InstanceIds: "{{TARGET_INSTANCE_IDS}}"
+    maxAttempts: 1
+    precondition:
+      StringEquals: ["{{detectPlatform.platform}}", "Linux"]
+
+  # Step 3: Execute Windows commands if the instance is Windows
+  - name: checkAndRestartWindows
+    action: "aws:runCommand"
+    onFailure: "step:notifyFailure"
+    isCritical: false
+    inputs:
+      DocumentName: "AWS-RunPowerShellScript"
+      Parameters:
+        commands:
+          - |
+            $ServiceName = "{{service_name}}"
+            $Service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+            if ($Service.Status -ne "Running") {
+              Write-Host "Service $ServiceName is not running. Restarting..."
+              Start-Service -Name $ServiceName
+              Start-Sleep -Seconds 10
+              $Service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+              if ($Service.Status -eq "Running") {
+                Write-Host "Service $ServiceName restarted successfully."
+              } else {
+                Write-Host "Failed to restart service $ServiceName."
+                exit 1
+              }
+            } else {
+              Write-Host "Service $ServiceName is running."
+            }
+      InstanceIds: "{{TARGET_INSTANCE_IDS}}"
+    maxAttempts: 1
+    precondition:
+      StringEquals: ["{{detectPlatform.platform}}", "Windows"]
+
+  # Step 4: Notify failure if any step fails
+  - name: notifyFailure
+    action: "aws:runCommand"
+    isCritical: false
+    inputs:
+      DocumentName: "AWS-RunShellScript"
+      Parameters:
+        commands:
+          - echo "CloudWatch Agent service failed to restart on one or more instances."
+      InstanceIds: "{{TARGET_INSTANCE_IDS}}"
