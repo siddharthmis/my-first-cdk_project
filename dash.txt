@@ -1,0 +1,102 @@
+## AWS Dashboards Showcase
+
+### Overview
+This page provides an in-depth look at four key AWS dashboards that offer insights into cost optimization, operational efficiency, and AWS updates. These dashboards serve as powerful tools for organizations to monitor, analyze, and optimize their AWS environments effectively.
+
+---
+
+## 1. CUDOS Dashboard v5
+**[Link to Dashboard](https://catalog.workshops.aws/awscid/en-US/dashboards/foundational/cudos-cid-kpi)**
+
+### Features:
+- Provides a comprehensive cost and usage analysis.
+- Offers multi-account and multi-service visibility.
+- Supports AWS Organizations for centralized monitoring.
+- Includes KPIs such as cost allocation, service trends, and savings opportunities.
+- Customizable dashboard with filtering and grouping options.
+
+### Pros:
+- Helps identify cost trends and anomalies.
+- Improves cloud financial management.
+- Enables detailed breakdown of costs at the service and region level.
+
+### Usefulness & Benefits:
+- Essential for FinOps teams to optimize cloud expenditure.
+- Enhances forecasting and budgeting with detailed insights.
+- Identifies underutilized resources for cost-saving measures.
+
+---
+
+## 2. KPI Dashboard
+**[Link to Dashboard](https://catalog.workshops.aws/awscid/en-US/dashboards/foundational/cudos-cid-kpi)**
+
+### Features:
+- Tracks key performance indicators (KPIs) for AWS environments.
+- Provides detailed views of AWS cost, usage, and efficiency.
+- Includes pre-built analytics and visualization tools.
+- Customizable for specific business and operational needs.
+
+### Pros:
+- Offers a standardized way to monitor AWS performance.
+- Enhances decision-making with real-time data insights.
+- Provides a clear view of cloud spending and optimization opportunities.
+
+### Usefulness & Benefits:
+- Ensures organizations stay within budget and optimize cloud resources.
+- Helps track service efficiency and performance.
+- Supports compliance and governance with structured reporting.
+
+---
+
+## 3. Compute Optimizer Dashboard
+**[Link to Dashboard](https://catalog.workshops.aws/awscid/en-US/dashboards/advanced/compute-optimizer)**
+
+### Features:
+- Provides insights into EC2 instance, Lambda function, and EBS volume usage.
+- Recommends right-sizing options for compute resources.
+- Supports machine learning-driven optimization.
+- Helps analyze CPU, memory, and throughput utilization trends.
+
+### Pros:
+- Automates resource recommendations for cost and performance balance.
+- Reduces underutilization and over-provisioning.
+- Provides actionable insights for workload optimization.
+
+### Usefulness & Benefits:
+- Improves performance while minimizing costs.
+- Enhances operational efficiency by optimizing AWS compute resources.
+- Supports scaling decisions with data-backed recommendations.
+
+---
+
+## 4. AWS News Feeds Dashboard
+**[Link to Dashboard](https://catalog.workshops.aws/awscid/en-US/dashboards/advanced/aws-feeds)**
+
+### Features:
+- Aggregates AWS news, updates, and announcements in real-time.
+- Provides insights into AWS services, features, and changes.
+- Enables tracking of AWS service disruptions and maintenance events.
+- Supports RSS and API-based feeds.
+
+### Pros:
+- Keeps teams updated with the latest AWS developments.
+- Helps organizations plan for upcoming service changes and updates.
+- Improves cloud strategy by staying informed about new AWS features.
+
+### Usefulness & Benefits:
+- Ensures timely awareness of AWS updates and releases.
+- Enhances cloud planning and migration strategies.
+- Reduces risk by tracking service disruptions and maintenance events.
+
+---
+
+## Additional Information
+### Best Practices for Dashboard Usage:
+- Regularly review dashboard metrics to optimize costs and performance.
+- Use automation and alerts to act on insights provided.
+- Customize dashboards to align with organizational goals and KPIs.
+- Integrate with AWS Organizations for a consolidated view across accounts.
+
+### Conclusion:
+These AWS dashboards provide critical insights into cost management, performance optimization, and service updates. By leveraging these dashboards, organizations can improve operational efficiency, enhance decision-making, and stay informed about AWS changes.
+
