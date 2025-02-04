@@ -1,0 +1,105 @@
+import boto3
+import os
+import json
+
+# AWS Clients
+ssm_client = boto3.client('ssm')
+ses_client = boto3.client('ses')
+
+# Environment Variables
+SENDER_EMAIL = os.environ.get('SENDER_EMAIL')  # SES verified sender email
+RECIPIENT_EMAIL = os.environ.get('RECIPIENT_EMAIL')  # Recipient email
+MAINTENANCE_WINDOW_ID = os.environ.get('MAINTENANCE_WINDOW_ID')  # SSM Maintenance Window ID
+
+def get_latest_execution_id(maintenance_window_id):
+    """
+    Retrieves the latest execution ID for the given Maintenance Window.
+    """
+    response = ssm_client.describe_maintenance_window_executions(
+        WindowId=maintenance_window_id,
+        MaxResults=1
+    )
+    
+    if response.get("WindowExecutions"):
+        return response["WindowExecutions"][0]["WindowExecutionId"]
+    
+    return None
+
+def get_task_execution_ids(window_execution_id):
+    """
+    Retrieves the execution task IDs from the maintenance window execution.
+    """
+    response = ssm_client.describe_maintenance_window_execution_task_invocations(
+        WindowExecutionId=window_execution_id
+    )
+
+    task_execution_ids = {item["WindowTargetId"]: item["Status"] for item in response.get("WindowExecutionTaskInvocations", [])}
+    return task_execution_ids
+
+def get_instance_execution_status(task_execution_ids):
+    """
+    Fetches the execution status of each instance from the SSM maintenance window execution.
+    """
+    instance_status = {}
+
+    for target_id, status in task_execution_ids.items():
+        instance_status[target_id] = status  # Possible values: Success, Failed, InProgress, TimedOut, etc.
+
+    return instance_status
+
+def generate_email_body(instance_status):
+    """
+    Generates an email body summarizing patching results.
+    """
+    success_count = sum(1 for status in instance_status.values() if status == "Success")
+    failed_count = sum(1 for status in instance_status.values() if status in ["Failed", "TimedOut"])
+    
+    email_body = f"SSM Maintenance Window Patch Execution Report\n\n"
+    email_body += f"Total Instances Targeted: {len(instance_status)}\n"
+    email_body += f"✔️ Success: {success_count}\n"
+    email_body += f"❌ Failed: {failed_count}\n\n"
+
+    email_body += "Instance Patch Execution Status:\n"
+    for instance_id, status in instance_status.items():
+        email_body += f"- {instance_id} → Status: {status}\n"
+
+    return email_body
+
+def send_email(subject, body):
+    """
+    Sends an email via AWS SES.
+    """
+    response = ses_client.send_email(
+        Source=SENDER_EMAIL,
+        Destination={'ToAddresses': [RECIPIENT_EMAIL]},
+        Message={
+            'Subject': {'Data': subject},
+            'Body': {'Text': {'Data': body}}
+        }
+    )
+    return response
+
+def lambda_handler(event, context):
+    """
+    Lambda function execution starts here.
+    """
+    # Fetch latest maintenance window execution ID
+    window_execution_id = get_latest_execution_id(MAINTENANCE_WINDOW_ID)
+    if not window_execution_id:
+        print("No recent maintenance window execution found.")
+        return
+    
+    # Get task execution status
+    task_execution_ids = get_task_execution_ids(window_execution_id)
+    
+    # Get instance-wise patch execution status
+    instance_status = get_instance_execution_status(task_execution_ids)
+    
+    # Generate email report
+    email_body = generate_email_body(instance_status)
+    send_email("SSM Patch Execution Report", email_body)
+    
+    return {
+        "statusCode": 200,
+        "body": json.dumps("Email sent successfully")
+    }
