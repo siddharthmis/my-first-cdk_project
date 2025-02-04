@@ -9,7 +9,7 @@ ses_client = boto3.client('ses')
 # Environment Variables
 SENDER_EMAIL = os.environ.get('SENDER_EMAIL')  # SES verified sender email
 RECIPIENT_EMAIL = os.environ.get('RECIPIENT_EMAIL')  # Recipient email
-MAINTENANCE_WINDOW_ID = os.environ.get('MAINTENANCE_WINDOW_ID')  # SSM Maintenance Window ID
+MAINTENANCE_WINDOW_ID = os.environ.get('MAINTENANCE_WINDOW_ID')  # Maintenance Window ID
 
 def get_latest_execution_id(maintenance_window_id):
     """
@@ -25,25 +25,54 @@ def get_latest_execution_id(maintenance_window_id):
     
     return None
 
-def get_task_execution_ids(window_execution_id):
+def get_command_task_execution_id(window_execution_id):
     """
-    Retrieves the execution task IDs from the maintenance window execution.
+    Retrieves the task execution ID that ran the SSM document (Command).
     """
-    response = ssm_client.describe_maintenance_window_execution_task_invocations(
+    response = ssm_client.describe_maintenance_window_execution_tasks(
         WindowExecutionId=window_execution_id
     )
 
-    task_execution_ids = {item["WindowTargetId"]: item["Status"] for item in response.get("WindowExecutionTaskInvocations", [])}
-    return task_execution_ids
+    for task in response.get("WindowExecutionTaskIdentities", []):
+        if task["TaskType"] == "RUN_COMMAND":
+            return task["WindowExecutionTaskId"]
+    
+    return None
 
-def get_instance_execution_status(task_execution_ids):
+def get_command_id_from_task(window_execution_id, task_execution_id):
     """
-    Fetches the execution status of each instance from the SSM maintenance window execution.
+    Retrieves the Command ID from the Maintenance Window Task Execution.
+    """
+    response = ssm_client.describe_maintenance_window_execution_task_invocations(
+        WindowExecutionId=window_execution_id,
+        TaskId=task_execution_id
+    )
+
+    command_ids = {}
+    for invocation in response.get("WindowExecutionTaskInvocations", []):
+        instance_id = invocation["WindowTargetId"]
+        command_id = invocation.get("CommandId")
+        if command_id:
+            command_ids[instance_id] = command_id
+
+    return command_ids
+
+def get_instance_execution_status(command_ids):
+    """
+    Retrieves the execution status of the SSM command per instance.
     """
     instance_status = {}
 
-    for target_id, status in task_execution_ids.items():
-        instance_status[target_id] = status  # Possible values: Success, Failed, InProgress, TimedOut, etc.
+    for instance_id, command_id in command_ids.items():
+        response = ssm_client.list_command_invocations(
+            CommandId=command_id,
+            InstanceId=instance_id,
+            Details=False
+        )
+        
+        if response.get("CommandInvocations"):
+            status = response["CommandInvocations"][0]["Status"]
+            instance_status[instance_id] = status  # Success, Failed, TimedOut, etc.
 
     return instance_status
 
@@ -89,11 +118,17 @@ def lambda_handler(event, context):
         print("No recent maintenance window execution found.")
         return
     
-    # Get task execution status
-    task_execution_ids = get_task_execution_ids(window_execution_id)
+    # Get task execution ID for RUN_COMMAND tasks
+    task_execution_id = get_command_task_execution_id(window_execution_id)
+    if not task_execution_id:
+        print("No RUN_COMMAND task found in maintenance window execution.")
+        return
     
-    # Get instance-wise patch execution status
-    instance_status = get_instance_execution_status(task_execution_ids)
+    # Get Command ID per instance
+    command_ids = get_command_id_from_task(window_execution_id, task_execution_id)
+    
+    # Get instance-wise command execution status
+    instance_status = get_instance_execution_status(command_ids)
     
     # Generate email report
     email_body = generate_email_body(instance_status)
