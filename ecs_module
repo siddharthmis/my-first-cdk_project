@@ -1,0 +1,73 @@
+import boto3
+import logging
+from datetime import datetime, timedelta
+
+# Initialize AWS clients
+ecs_client = boto3.client('ecs')
+cloudwatch_client = boto3.client('cloudwatch')
+
+# Initialize logger
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+
+def collect_metrics(put_metric_to_dynamodb, service_metrics):
+    """
+    Collects the number of running tasks for each ECS service in each cluster.
+
+    :param put_metric_to_dynamodb: Function to insert/update DynamoDB table
+    :param service_metrics: Default metric thresholds and configurations from JSON
+    """
+    try:
+        clusters = ecs_client.list_clusters()['clusterArns']
+        logger.info(f"Found {len(clusters)} ECS clusters.")
+
+        for cluster_arn in clusters:
+            cluster_name = cluster_arn.split('/')[-1]  # Extract cluster name
+
+            # List all services in the cluster
+            services = ecs_client.list_services(cluster=cluster_name)['serviceArns']
+            logger.info(f"Found {len(services)} services in ECS cluster {cluster_name}.")
+
+            for service_arn in services:
+                service_name = service_arn.split('/')[-1]  # Extract service name
+
+                # Describe the service to get the number of running tasks
+                response = ecs_client.describe_services(cluster=cluster_name, services=[service_name])
+                if not response['services']:
+                    logger.warning(f"No details found for service {service_name} in cluster {cluster_name}. Skipping.")
+                    continue
+
+                running_count = response['services'][0]['runningCount']
+                logger.info(f"ECS Service: {service_name} in Cluster: {cluster_name} has {running_count} running tasks.")
+
+                # Fetch metric configuration from service_metrics JSON
+                metric_config = service_metrics.get("RunningTaskCount", {})
+                namespace = metric_config.get("Namespace", "AWS/ECS")
+                threshold = metric_config.get("Threshold", 1)  # Default threshold
+                statistic = metric_config.get("Statistic", "Average")
+                comparison_operator = metric_config.get("ComparisonOperator", "LessThanThreshold")
+                period = metric_config.get("Period", 300)
+                datapoints_to_alarm = metric_config.get("DatapointsToAlarm", 2)
+                evaluation_periods = metric_config.get("EvaluationPeriods", 2)
+
+                # Insert/update the metric in DynamoDB
+                put_metric_to_dynamodb(
+                    resource_id=service_name,
+                    resource_type="ECSService",
+                    metric_name="RunningTaskCount",
+                    namespace=namespace,
+                    dimensions=[
+                        {"Name": "ClusterName", "Value": cluster_name},
+                        {"Name": "ServiceName", "Value": service_name}
+                    ],
+                    threshold=threshold,
+                    statistic=statistic,
+                    comparison_operator=comparison_operator,
+                    period=period,
+                    datapoints_to_alarm=datapoints_to_alarm,
+                    evaluation_periods=evaluation_periods
+                )
+
+    except Exception as e:
+        logger.error(f"Error collecting ECS metrics: {e}")
