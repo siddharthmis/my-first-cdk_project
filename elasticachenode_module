@@ -1,0 +1,87 @@
+import boto3
+import logging
+from datetime import datetime, timedelta
+
+# Initialize AWS clients
+elasticache_client = boto3.client('elasticache')
+cloudwatch_client = boto3.client('cloudwatch')
+
+# Initialize logger
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def collect_metrics(put_metric_to_dynamodb, service_metrics):
+    """
+    Collects the FreeableMemory metric for each ElastiCache node.
+
+    :param put_metric_to_dynamodb: Function to insert/update DynamoDB table
+    :param service_metrics: Default metric thresholds and configurations from JSON
+    """
+    try:
+        # List all ElastiCache clusters
+        clusters = elasticache_client.describe_cache_clusters(ShowCacheNodeInfo=True)['CacheClusters']
+        logger.info(f"Found {len(clusters)} ElastiCache clusters.")
+
+        for cluster in clusters:
+            cluster_id = cluster['CacheClusterId']
+
+            # Iterate through all nodes in the cluster
+            for node in cluster['CacheNodes']:
+                node_id = node['CacheNodeId']
+
+                # Fetch metric configuration from service_metrics JSON
+                metric_config = service_metrics.get("FreeableMemory", {})
+                namespace = metric_config.get("Namespace", "AWS/ElastiCache")
+                threshold = metric_config.get("Threshold", 50000000)  # Default threshold in bytes
+                statistic = metric_config.get("Statistic", "Average")
+                comparison_operator = metric_config.get("ComparisonOperator", "LessThanThreshold")
+                period = metric_config.get("Period", 300)
+                datapoints_to_alarm = metric_config.get("DatapointsToAlarm", 2)
+                evaluation_periods = metric_config.get("EvaluationPeriods", 2)
+
+                # Fetch FreeableMemory metric data from CloudWatch
+                current_time = datetime.utcnow()
+                try:
+                    metric_response = cloudwatch_client.get_metric_statistics(
+                        Namespace=namespace,
+                        MetricName="FreeableMemory",
+                        Dimensions=[
+                            {"Name": "CacheClusterId", "Value": cluster_id},
+                            {"Name": "CacheNodeId", "Value": node_id}
+                        ],
+                        StartTime=current_time - timedelta(minutes=15),
+                        EndTime=current_time,
+                        Period=period,
+                        Statistics=[statistic]
+                    )
+
+                    # Process metric data
+                    if 'Datapoints' in metric_response and metric_response['Datapoints']:
+                        metric_value = metric_response['Datapoints'][0][statistic]
+                        logger.info(f"ElastiCache Node: {node_id} in Cluster: {cluster_id} has {metric_value} FreeableMemory.")
+
+                        # Insert/update the metric in DynamoDB
+                        put_metric_to_dynamodb(
+                            resource_id=f"{cluster_id}-{node_id}",
+                            resource_type="ElastiCacheNode",
+                            metric_name="FreeableMemory",
+                            namespace=namespace,
+                            dimensions=[
+                                {"Name": "CacheClusterId", "Value": cluster_id},
+                                {"Name": "CacheNodeId", "Value": node_id}
+                            ],
+                            threshold=threshold,
+                            statistic=statistic,
+                            comparison_operator=comparison_operator,
+                            period=period,
+                            datapoints_to_alarm=datapoints_to_alarm,
+                            evaluation_periods=evaluation_periods
+                        )
+                    else:
+                        logger.warning(f"No data found for FreeableMemory metric on {cluster_id}-{node_id}. Skipping.")
+
+                except Exception as e:
+                    logger.error(f"Error fetching FreeableMemory metric for {cluster_id}-{node_id}: {e}")
+
+    except Exception as e:
+        logger.error(f"Error collecting ElastiCache metrics: {e}")
