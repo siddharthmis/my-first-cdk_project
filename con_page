@@ -1,0 +1,66 @@
+h1. AWS Automation Overview
+
+This page provides an overview of all AWS automations implemented using Lambda. Each automation includes a flowchart, a description, and details on the AWS resources used.
+
+h2. 1. AWS Glue Job Concurrency Automation
+* *Trigger:* EventBridge
+* *Lambda Action:* Fetch Glue job concurrency and validate against thresholds
+* *Resources Used:* AWS Lambda, AWS Glue, Amazon SES, DynamoDB, EventBridge
+* *Outcome:* Updates job concurrency if outside the allowed range and notifies via email
+
+![AWS Glue Job Concurrency Automation](attachment:A_detailed_flowchart_illustrating_AWS_Glue_Job_Con.png)
+
+---
+
+h2. 2. EC2 Linux File Share Monitoring
+* *Trigger:* AWS Lambda scheduled execution
+* *Lambda Action:* Iterates over EC2 instances, filters Linux servers, and checks file share usage
+* *Resources Used:* AWS Lambda, EC2, Amazon SES
+* *Outcome:* Sends an alert if file share usage exceeds 90%
+
+![EC2 Linux File Share Monitoring](attachment:A_detailed_flowchart_illustrating_EC2_Linux_File_S.png)
+
+---
+
+h2. 3. Jira and Teams Automation
+* *Trigger:* Event-driven Lambda execution
+* *Lambda Action:* Creates/updates Jira tickets and sends Microsoft Teams notifications
+* *Resources Used:* AWS Lambda, Jira API, Microsoft Teams API
+* *Outcome:* Automates Jira ticket management and integrates communication
+
+![Jira and Teams Automation](attachment:A_detailed_flowchart_illustrating_Jira_and_Teams_A.png)
+
+---
+
+h2. 4. AWS EC2 Provisioning with Jira Tickets
+* *Trigger:* Jira ticket creation
+* *Lambda Action:* Provisions EC2 instances based on ticket requests
+* *Resources Used:* AWS Lambda, EC2, Jira API
+* *Outcome:* Automates EC2 provisioning with ticket tracking
+
+![AWS EC2 Provisioning](attachment:A_detailed_flowchart_illustrating_AWS_EC2_Provisio.png)
+
+---
+
+h2. 5. Real-Time Anomaly Detection
+* *Trigger:* Continuous data streaming
+* *Lambda Action:* Applies ML-based anomaly detection
+* *Resources Used:* AWS Lambda, Amazon CloudWatch, Amazon SNS, Amazon S3, SageMaker
+* *Outcome:* Detects anomalies in real-time and alerts administrators
+
+![Real-Time Anomaly Detection](attachment:A_detailed_flowchart_illustrating_Real-Time_Anomal.png)
+
+---
+
+h2. 6. AWS EC2 Patching Automation
+* *Trigger:* New EC2 instance reporting to SSM
+* *Lambda Action:* Determines if patching is required and applies updates
+* *Resources Used:* AWS Lambda, EC2, AWS Systems Manager (SSM)
+* *Outcome:* Ensures instances are patched automatically
+
+![AWS EC2 Patching Automation](attachment:A_detailed_flowchart_illustrating_AWS_EC2_Patching.png)
+
+---
+
+This document serves as a centralized reference for all implemented AWS Lambda-based automations, providing visibility into their processes and benefits.
+
