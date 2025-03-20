@@ -1,0 +1,173 @@
+I am creating a role in AWS using CDK with Python, Now I would like to update the actions in trust relationship and add few more actions during role creation. How can I do it?
+ChatGPT said:
+When creating an AWS IAM Role using AWS CDK with Python, you can update the trust relationship (assume role policy) by modifying the assume_role_policy and adding additional actions.
+
+Steps to update the trust relationship:
+Define the assume role policy with specific actions.
+Use iam.Role in AWS CDK and provide the updated trust relationship.
+Add necessary permissions using add_to_policy() or managed policies.
+Example: Creating an IAM Role with a Custom Trust Relationship
+python
+Copy
+Edit
+from aws_cdk import (
+    core as cdk,
+    aws_iam as iam
+)
+
+class IAMRoleStack(cdk.Stack):
+    def __init__(self, scope: cdk.Construct, id: str, **kwargs):
+        super().__init__(scope, id, **kwargs)
+
+        # Define a trust policy for the role
+        assume_role_policy = iam.PolicyDocument(
+            statements=[
+                iam.PolicyStatement(
+                    effect=iam.Effect.ALLOW,
+                    principals=[iam.ServicePrincipal("ec2.amazonaws.com")],
+                    actions=["sts:AssumeRole", "sts:TagSession"],  # Adding extra actions
+                )
+            ]
+        )
+
+        # Create the IAM Role
+        role = iam.Role(
+            self,
+            "CustomIAMRole",
+            assumed_by=iam.CompositePrincipal(
+                iam.ServicePrincipal("ec2.amazonaws.com"),
+                iam.ServicePrincipal("lambda.amazonaws.com")  # Adding more trusted services
+            ),
+            inline_policies={"CustomTrustPolicy": assume_role_policy}
+        )
+
+        # Attach necessary permissions to the role
+        role.add_to_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=[
+                    "s3:ListBucket",
+                    "s3:GetObject",
+                    "s3:PutObject"
+                ],
+                resources=["arn:aws:s3:::my-bucket/*"]
+            )
+        )
+
+        # Attach a managed policy if needed
+        role.add_managed_policy(iam.ManagedPolicy.from_aws_managed_policy_name("AmazonS3FullAccess"))
+
+Key Updates:
+Modified the Trust Relationship
+
+Allows ec2.amazonaws.com and lambda.amazonaws.com to assume the role.
+Added "sts:TagSession" to the trust relationship actions.
+Added More Permissions
+
+Inline policy allowing S3 actions (s3:ListBucket, s3:GetObject, s3:PutObject).
+Attached a managed policy (AmazonS3FullAccess).
+Updating Trust Relationship for an Existing Role
+If you want to update an existing role in CDK:
+
+python
+Copy
+Edit
+role.assume_role_policy.add_statements(
+    iam.PolicyStatement(
+        effect=iam.Effect.ALLOW,
+        principals=[iam.ServicePrincipal("lambda.amazonaws.com")],
+        actions=["sts:AssumeRole"]
+    )
+)
+This adds an additional trusted principal (lambda.amazonaws.com) to an existing IAM role.
+
+Would you like to modify the policy dynamically based on conditions? 🚀
+
+
+
+
+
+
+
+You said:
+I have a modularized file for IAM and I would like it updated in such a way where if additional actions are passed, then only Actions should get updated otherwise not.
+ChatGPT said:
+Since you have a modularized IAM role file in your AWS CDK project, I will guide you on how to conditionally update only the actions in the trust relationship when additional actions are provided.
+
+Solution Approach
+Your existing IAM role module should have a method to accept additional trust policy actions dynamically.
+If no additional actions are provided, the role should be created with default trust actions.
+If additional actions are passed, only the Actions in the trust relationship should be updated.
+Updated IAM Role Module (iam_role.py)
+python
+Copy
+Edit
+from aws_cdk import aws_iam as iam, core as cdk
+from typing import List, Optional
+
+class IAMRoleConstruct(cdk.Construct):
+    def __init__(self, scope: cdk.Construct, id: str, additional_trust_actions: Optional[List[str]] = None):
+        super().__init__(scope, id)
+
+        # Default trust actions
+        default_trust_actions = ["sts:AssumeRole"]
+
+        # Merge default and additional actions (avoid duplication)
+        if additional_trust_actions:
+            trust_actions = list(set(default_trust_actions + additional_trust_actions))
+        else:
+            trust_actions = default_trust_actions
+
+        # Trust policy statement with dynamic actions
+        assume_role_policy = iam.PolicyDocument(
+            statements=[
+                iam.PolicyStatement(
+                    effect=iam.Effect.ALLOW,
+                    principals=[iam.ServicePrincipal("ec2.amazonaws.com")],
+                    actions=trust_actions
+                )
+            ]
+        )
+
+        # Create IAM Role
+        self.role = iam.Role(
+            self,
+            "CustomIAMRole",
+            assumed_by=iam.ServicePrincipal("ec2.amazonaws.com"),
+            inline_policies={"CustomTrustPolicy": assume_role_policy}
+        )
+
+    def get_role(self):
+        return self.role
+Usage in Your CDK Stack (main.py)
+python
+Copy
+Edit
+from aws_cdk import core as cdk
+from iam_role import IAMRoleConstruct  # Import the IAM Role module
+
+class MyStack(cdk.Stack):
+    def __init__(self, scope: cdk.Construct, id: str, **kwargs):
+        super().__init__(scope, id, **kwargs)
+
+        # Example: Update trust relationship actions only when extra actions are passed
+        additional_trust_actions = ["sts:TagSession"]  # Pass only if required
+
+        iam_role = IAMRoleConstruct(self, "IAMRoleWithDynamicTrust", additional_trust_actions)
+        print(f"Created IAM Role: {iam_role.get_role().role_arn}")
+
+app = cdk.App()
+MyStack(app, "MyStack")
+app.synth()
+How This Works
+If additional_trust_actions is None, the trust policy will only have "sts:AssumeRole".
+If extra actions (e.g., ["sts:TagSession"]) are passed, they get merged without duplication.
+The role remains unchanged unless explicitly modified.
+Would you like me to add additional conditions, such as updating only if the action list is different from the existing one? 🚀
+
+
+
+
+
+
+
