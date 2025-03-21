@@ -1,4 +1,3 @@
-You said:
 I want to remove older versions/vulnerabilities related to visual C++ from EC2 windows servers using SSM document. Can you provide a robust, fault-tolerant SSM document with excellent logging?
 ChatGPT said:
 Reasoned for 43 seconds
@@ -12,7 +11,7 @@ Robust error handling: Every step is wrapped in try/catch blocks, and all outcom
 You can modify the filtering criteria and logging paths to suit your environment. Copy the following SSM document and create a new document in your SSM console:
 
 json
-Copy code
+Copy
 {
   "schemaVersion": "2.2",
   "description": "Remove older/vulnerable Visual C++ installations from Windows EC2 instances with robust logging.",
@@ -85,6 +84,7 @@ Deploy this document using the AWS SSM console or AWS CLI, and then execute it o
 
 
 
+
 You said:
 Instead of display name, I would like to use the version for uninstalling
 ChatGPT said:
@@ -94,7 +94,7 @@ Below is an updated SSM document that uses the installed product’s version (fr
 This document continues to provide robust logging (writing detailed entries to C:\Temp\VCRemoval.log) and fault tolerance through try/catch blocks, ensuring that even if one uninstallation fails, the script continues processing the rest.
 
 json
-Copy code
+Copy
 {
   "schemaVersion": "2.2",
   "description": "Remove older/vulnerable Visual C++ installations from Windows EC2 instances based on version with robust logging.",
@@ -194,10 +194,6 @@ Logging is done to C:\Temp\VCRemoval.log for every significant step, including q
 
 Deploy this document using the AWS Systems Manager console or AWS CLI, and then execute it on your target Windows EC2 instances via SSM. Adjust the version threshold and any logging paths as needed for your environment.
 
-
-
-
-
 You said:
 ok, how about if I need to pass the list of versions to be removed?
 ChatGPT said:
@@ -207,7 +203,7 @@ Below is an updated SSM document that lets you pass in a comma-separated list of
 The script includes robust logging (writing detailed entries to C:\Temp\VCRemoval.log) and error handling so that even if one uninstallation fails, the script continues processing the remaining items.
 
 json
-Copy code
+Copy
 {
   "schemaVersion": "2.2",
   "description": "Remove specific Visual C++ installations from Windows EC2 instances based on a provided list of versions, with robust logging.",
@@ -318,3 +314,121 @@ Robust Logging & Error Handling:
 Detailed log entries are written to C:\Temp\VCRemoval.log at each step—from parameter parsing and version comparison to executing the uninstall command. Try/catch blocks ensure that errors during processing of any individual package do not stop the script from continuing.
 
 Deploy this SSM document using the AWS Systems Manager console or AWS CLI, and then execute it on your target Windows EC2 instances via SSM. Adjust the parameter default and logging paths as needed for your environment.
+
+You said:
+I don't want the logs in a separate file but to be written in SSM output itself
+ChatGPT said:
+Reasoned about logging to SSM output for 11 seconds
+Below is an updated SSM document that writes all log output directly to the SSM command output rather than to a file. In this version, the custom logging function simply writes to standard output using Write-Output, which is captured by SSM.
+
+json
+Copy
+{
+  "schemaVersion": "2.2",
+  "description": "Remove specific Visual C++ installations from Windows EC2 instances based on a provided list of versions, with logs written to SSM output.",
+  "parameters": {
+    "VersionsToRemove": {
+      "type": "String",
+      "description": "Comma-separated list of Visual C++ versions to remove. Only installations with these versions will be uninstalled.",
+      "default": "12.0.0.0, 13.0.0.0"
+    }
+  },
+  "mainSteps": [
+    {
+      "action": "aws:runPowerShellScript",
+      "name": "RemoveVisualCPP",
+      "inputs": {
+        "runCommand": [
+          "function Write-Log {",
+          "    param([string]$message)",
+          "    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'",
+          "    Write-Output \"$timestamp - $message\"",
+          "}",
+          "",
+          "Write-Log 'Starting Visual C++ removal script using version list.'",
+          "",
+          "try {",
+          "    Write-Log 'Parsing VersionsToRemove parameter.'",
+          "    $versionsToRemoveRaw = \"{{ VersionsToRemove }}\"",
+          "    $versionsToRemove = $versionsToRemoveRaw -split ',' | ForEach-Object { $_.Trim() } | ForEach-Object {",
+          "        try {",
+          "            [version]$_",
+          "        } catch {",
+          "            Write-Log \"Invalid version format encountered: $_. Skipping.\"",
+          "            $null",
+          "        }",
+          "    }",
+          "    $versionsToRemove = $versionsToRemove | Where-Object { $_ -ne $null }",
+          "    Write-Log \"Versions to remove: $($versionsToRemove -join ', ')\"",
+          "",
+          "    Write-Log 'Querying installed Visual C++ programs...'",
+          "    $programs = Get-ItemProperty 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*', 'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -ErrorAction SilentlyContinue |",
+          "        Where-Object { $_.DisplayName -like 'Microsoft Visual C++*' }",
+          "    Write-Log \"Found $($programs.Count) Visual C++ installations.\"",
+          "",
+          "    $vulnerablePrograms = @()",
+          "    foreach ($program in $programs) {",
+          "        try {",
+          "            if ($program.DisplayVersion) {",
+          "                $currentVersion = [version]$program.DisplayVersion",
+          "                if ($versionsToRemove -contains $currentVersion) {",
+          "                    $vulnerablePrograms += $program",
+          "                    Write-Log \"Marked $($program.DisplayName) (version $($program.DisplayVersion)) for removal.\"",
+          "                } else {",
+          "                    Write-Log \"$($program.DisplayName) (version $($program.DisplayVersion)) does not match removal criteria.\"",
+          "                }",
+          "            } else {",
+          "                Write-Log \"No DisplayVersion found for $($program.DisplayName); skipping version check.\"",
+          "            }",
+          "        } catch {",
+          "            Write-Log \"Error processing version for $($program.DisplayName): $($_.Exception.Message)\"",
+          "        }",
+          "    }",
+          "    Write-Log \"Identified $($vulnerablePrograms.Count) Visual C++ installations for removal based on provided version list.\"",
+          "",
+          "    foreach ($program in $vulnerablePrograms) {",
+          "        Write-Log \"Attempting to remove $($program.DisplayName) with version $($program.DisplayVersion).\"",
+          "        try {",
+          "            if ($program.UninstallString) {",
+          "                $uninstallCmd = $program.UninstallString",
+          "                Write-Log \"Executing uninstall command: $uninstallCmd\"",
+          "                if ($uninstallCmd -notlike '*quiet*') {",
+          "                    $uninstallCmd += ' /quiet /norestart'",
+          "                }",
+          "                $process = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', $uninstallCmd -Wait -PassThru -ErrorAction Stop",
+          "                if ($process.ExitCode -eq 0) {",
+          "                    Write-Log \"Successfully removed $($program.DisplayName) (version $($program.DisplayVersion)).\"",
+          "                } else {",
+          "                    Write-Log \"Removal of $($program.DisplayName) returned exit code $($process.ExitCode).\"",
+          "                }",
+          "            } else {",
+          "                Write-Log \"No uninstall string found for $($program.DisplayName).\"",
+          "            }",
+          "        } catch {",
+          "            Write-Log \"Error removing $($program.DisplayName): $($_.Exception.Message)\"",
+          "        }",
+          "    }",
+          "    Write-Log 'Visual C++ removal script completed.'",
+          "} catch {",
+          "    Write-Log \"General error in the removal script: $($_.Exception.Message)\"",
+          "    exit 1",
+          "}"
+        ]
+      }
+    }
+  ]
+}
+How It Works
+Logging to SSM Output:
+The Write-Log function now uses Write-Output to send log messages (with timestamps) directly to the SSM command output.
+
+Parameterization:
+The VersionsToRemove parameter lets you pass a comma-separated list of Visual C++ versions that should be uninstalled.
+
+Version Filtering:
+The script queries the registry for installed Visual C++ packages, converts their DisplayVersion to a [version] object, and checks if it matches any version provided in the VersionsToRemove list.
+
+Robust Error Handling:
+Try/catch blocks ensure that any issues during processing do not stop the script from attempting to uninstall remaining matching packages.
+
+Deploy this document using the AWS Systems Manager console or CLI, and then run it on your target Windows EC2 instances via SSM. The log output will be visible directly in the SSM command output.
