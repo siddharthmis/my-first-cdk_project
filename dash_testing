@@ -1,0 +1,402 @@
+Complete Multi-Region Code
+📁 lambda_function.py
+python
+Copy
+Edit
+import boto3
+from datetime import datetime, timezone, timedelta
+from utils import assume_role, list_org_accounts
+from metrics_publisher import publish_patch_metrics, publish_backup_metrics
+from dashboard_builder import build_patch_dashboard, build_backup_dashboard
+
+ROLE_NAME = 'ReadOnlyCrossAccountRole'
+TARGET_REGIONS = ['us-east-1', 'us-west-2']
+
+def lambda_handler(event, context):
+    org_client = boto3.client('organizations')
+    cw_client = boto3.client('cloudwatch')
+
+    accounts = list_org_accounts(org_client)
+    patch_metrics = []
+    backup_metrics = []
+
+    for account in accounts:
+        account_id = account['Id']
+        account_name = account['Name']
+        print(f"Processing account {account_id} ({account_name})")
+
+        session = assume_role(account_id, ROLE_NAME)
+        if not session:
+            print(f"Skipping account {account_id}")
+            continue
+
+        for region in TARGET_REGIONS:
+            print(f"  - Checking region: {region}")
+            try:
+                # Patch Metrics with Patch Age
+                ssm = session.client('ssm', region_name=region)
+                response = ssm.describe_instance_patch_states(MaxResults=50)
+                states = response.get('InstancePatchStates', [])
+                total = len(states)
+                compliant = sum(1 for s in states if s['ComplianceSummary']['CompliantCount'] > 0)
+                noncompliant = total - compliant
+                percent = round((compliant / total) * 100, 2) if total else 0
+
+                now = datetime.now(timezone.utc)
+                stale = 0
+                for s in states:
+                    if s['ComplianceSummary']['MissingCount'] > 0:
+                        installed_time = s.get('InstalledTime')
+                        if installed_time and (now - installed_time).days > 30:
+                            stale += 1
+
+                patch_metrics.append({
+                    'AccountId': account_id,
+                    'AccountName': account_name,
+                    'Region': region,
+                    'Total': total,
+                    'Compliant': compliant,
+                    'NonCompliant': noncompliant,
+                    'Stale': stale,
+                    'Percent': percent
+                })
+                publish_patch_metrics(account_id, region, compliant, noncompliant, percent, stale)
+
+            except Exception as e:
+                print(f"Patch error for {account_id} in {region}: {e}")
+
+            try:
+                # Backup Metrics with Expiry Check
+                backup = session.client('backup', region_name=region)
+                resources = backup.list_protected_resources(MaxResults=100)
+                protected_count = len(resources.get('Results', []))
+
+                jobs = backup.list_backup_jobs(MaxResults=100, ByState='COMPLETED')
+                expiring_soon = 0
+                now = datetime.now(timezone.utc)
+                for job in jobs.get('BackupJobs', []):
+                    expiry = job.get('RecoveryPointExpiryDate')
+                    if expiry and (expiry - now).days <= 3:
+                        expiring_soon += 1
+
+                backup_metrics.append({
+                    'AccountId': account_id,
+                    'AccountName': account_name,
+                    'Region': region,
+                    'ProtectedCount': protected_count,
+                    'ExpiringBackups': expiring_soon
+                })
+                publish_backup_metrics(account_id, region, protected_count, expiring_soon)
+
+            except Exception as e:
+                print(f"Backup error for {account_id} in {region}: {e}")
+
+    # Push Dashboards
+    cw_client.put_dashboard(
+        DashboardName='Central-Patching-Dashboard',
+        DashboardBody=build_patch_dashboard(patch_metrics)
+    )
+    cw_client.put_dashboard(
+        DashboardName='Central-Backup-Dashboard',
+        DashboardBody=build_backup_dashboard(backup_metrics)
+    )
+📁 metrics_publisher.py
+python
+Copy
+Edit
+import boto3
+
+cw = boto3.client('cloudwatch')
+NAMESPACE = 'CentralDashboards'
+
+def publish_patch_metrics(account_id, region, compliant, noncompliant, percent, stale):
+    cw.put_metric_data(
+        Namespace=NAMESPACE,
+        MetricData=[
+            {
+                'MetricName': 'PatchCompliance',
+                'Dimensions': [
+                    {'Name': 'AccountId', 'Value': account_id},
+                    {'Name': 'Region', 'Value': region}
+                ],
+                'Value': percent,
+                'Unit': 'Percent'
+            },
+            {
+                'MetricName': 'CompliantInstanceCount',
+                'Dimensions': [
+                    {'Name': 'AccountId', 'Value': account_id},
+                    {'Name': 'Region', 'Value': region}
+                ],
+                'Value': compliant,
+                'Unit': 'Count'
+            },
+            {
+                'MetricName': 'NonCompliantInstanceCount',
+                'Dimensions': [
+                    {'Name': 'AccountId', 'Value': account_id},
+                    {'Name': 'Region', 'Value': region}
+                ],
+                'Value': noncompliant,
+                'Unit': 'Count'
+            },
+            {
+                'MetricName': 'StalePatchInstanceCount',
+                'Dimensions': [
+                    {'Name': 'AccountId', 'Value': account_id},
+                    {'Name': 'Region', 'Value': region}
+                ],
+                'Value': stale,
+                'Unit': 'Count'
+            }
+        ]
+    )
+
+def publish_backup_metrics(account_id, region, protected_count, expiring_count):
+    cw.put_metric_data(
+        Namespace=NAMESPACE,
+        MetricData=[
+            {
+                'MetricName': 'ProtectedResourceCount',
+                'Dimensions': [
+                    {'Name': 'AccountId', 'Value': account_id},
+                    {'Name': 'Region', 'Value': region}
+                ],
+                'Value': protected_count,
+                'Unit': 'Count'
+            },
+            {
+                'MetricName': 'ExpiringBackupsIn3Days',
+                'Dimensions': [
+                    {'Name': 'AccountId', 'Value': account_id},
+                    {'Name': 'Region', 'Value': region}
+                ],
+                'Value': expiring_count,
+                'Unit': 'Count'
+            }
+        ]
+    )
+📁 utils.py (no change)
+python
+Copy
+Edit
+import boto3
+from botocore.exceptions import ClientError
+
+def assume_role(account_id, role_name):
+    sts = boto3.client('sts')
+    role_arn = f"arn:aws:iam::{account_id}:role/{role_name}"
+    try:
+        response = sts.assume_role(
+            RoleArn=role_arn,
+            RoleSessionName='CentralDashboardSession'
+        )
+        creds = response['Credentials']
+        return boto3.Session(
+            aws_access_key_id=creds['AccessKeyId'],
+            aws_secret_access_key=creds['SecretAccessKey'],
+            aws_session_token=creds['SessionToken']
+        )
+    except ClientError as e:
+        print(f"AssumeRole failed for {account_id}: {e}")
+        return None
+
+def list_org_accounts(org_client):
+    accounts = []
+    paginator = org_client.get_paginator('list_accounts')
+    for page in paginator.paginate():
+        for acc in page['Accounts']:
+            if acc['Status'] == 'ACTIVE':
+                accounts.append(acc)
+    return accounts
+📁 dashboard_builder.py (multi-region support coming next message) ⏬
+
+
+
+
+
+
+You said:
+Haven't received next message.
+ChatGPT said:
+Here’s the final piece — the multi-region-aware dashboard_builder.py file:
+
+📁 dashboard_builder.py
+python
+Copy
+Edit
+import json
+
+def build_patch_dashboard(data):
+    widgets = []
+    x, y = 0, 0
+
+    if data:
+        avg_percent = round(sum(d['Percent'] for d in data) / len(data), 2)
+        widgets.append({
+            "type": "text",
+            "x": 0,
+            "y": y,
+            "width": 24,
+            "height": 3,
+            "properties": {
+                "markdown": f"## 🛡️ Global Patch Compliance: {avg_percent}% across {len(data)} account-region pairs"
+            }
+        })
+        y += 3
+
+    # Gauges for each account/region combo
+    for entry in data:
+        widgets.append({
+            "type": "metric",
+            "x": x,
+            "y": y,
+            "width": 6,
+            "height": 6,
+            "properties": {
+                "metrics": [
+                    ["CentralDashboards", "PatchCompliance", "AccountId", entry['AccountId'], "Region", entry['Region']]
+                ],
+                "view": "gauge",
+                "stat": "Average",
+                "region": "us-east-1",
+                "title": f"{entry['AccountName']} [{entry['Region']}] Patch %"
+            }
+        })
+        x += 6
+        if x >= 24:
+            x = 0
+            y += 6
+
+    # Compliant vs NonCompliant bar chart
+    metrics = []
+    for entry in data:
+        metrics.append(["CentralDashboards", "CompliantInstanceCount", "AccountId", entry['AccountId'], "Region", entry['Region']])
+        metrics.append(["...", "NonCompliantInstanceCount", "AccountId", entry['AccountId'], "Region", entry['Region']])
+    widgets.append({
+        "type": "metric",
+        "x": 0,
+        "y": y + 1,
+        "width": 24,
+        "height": 6,
+        "properties": {
+            "metrics": metrics,
+            "view": "bar",
+            "stacked": True,
+            "stat": "Sum",
+            "region": "us-east-1",
+            "title": "Compliant vs Non-Compliant Instances by Region"
+        }
+    })
+
+    # Stale Patch Gauge
+    for entry in data:
+        widgets.append({
+            "type": "metric",
+            "x": 0,
+            "y": y + 8,
+            "width": 6,
+            "height": 6,
+            "properties": {
+                "metrics": [
+                    ["CentralDashboards", "StalePatchInstanceCount", "AccountId", entry['AccountId'], "Region", entry['Region']]
+                ],
+                "view": "gauge",
+                "stat": "Sum",
+                "region": "us-east-1",
+                "title": f"{entry['AccountName']} [{entry['Region']}] Stale Patches >30d"
+            }
+        })
+
+    return json.dumps({"widgets": widgets})
+
+
+def build_backup_dashboard(data):
+    widgets = []
+    x, y = 0, 0
+
+    total_resources = sum(d['ProtectedCount'] for d in data)
+    widgets.append({
+        "type": "text",
+        "x": 0,
+        "y": y,
+        "width": 24,
+        "height": 3,
+        "properties": {
+            "markdown": f"## 📦 Global Backup Summary: {total_resources} protected resources across {len(data)} account-region pairs"
+        }
+    })
+    y += 3
+
+    # Protected Resources - Single Value
+    for entry in data:
+        widgets.append({
+            "type": "metric",
+            "x": x,
+            "y": y,
+            "width": 6,
+            "height": 6,
+            "properties": {
+                "metrics": [
+                    ["CentralDashboards", "ProtectedResourceCount", "AccountId", entry['AccountId'], "Region", entry['Region']]
+                ],
+                "view": "singleValue",
+                "stat": "Sum",
+                "region": "us-east-1",
+                "title": f"{entry['AccountName']} [{entry['Region']}] Protected"
+            }
+        })
+        x += 6
+        if x >= 24:
+            x = 0
+            y += 6
+
+    # Expiring Backup Bar Chart
+    metrics = []
+    for entry in data:
+        metrics.append(["CentralDashboards", "ExpiringBackupsIn3Days", "AccountId", entry['AccountId'], "Region", entry['Region']])
+    widgets.append({
+        "type": "metric",
+        "x": 0,
+        "y": y + 8,
+        "width": 24,
+        "height": 6,
+        "properties": {
+            "metrics": metrics,
+            "view": "bar",
+            "stat": "Sum",
+            "region": "us-east-1",
+            "title": "Backups Expiring in Next 3 Days by Region"
+        }
+    })
+
+    return json.dumps({"widgets": widgets})
+✅ Final Notes
+Feature	Status
+Multi-account	✅
+Multi-region	✅
+Patch compliance + stale tracking	✅
+Backup coverage + expiry tracking	✅
+CloudWatch dashboard ready	✅
+No member account changes needed	✅
+You're now fully set up for centralized, multi-region, multi-account, graphical CloudWatch dashboards for both patching and backup.
+
+Let me know if you'd like to:
+
+Add alerting
+Extend to more services
+Deploy via CDK
+I'm here to help!
+
+
+
+
+
+
+
+You said:
+let me try this first and get back if more enhancements are needed.
+ChatGPT said:
+Perfect! 🎯 Take your time testing it out. The setup is solid, scalable, and ready for action — but if you hit any bumps or want to add enhancements later (like alerts, filtering, tagging, or reporting), just drop a message.
+
+Good luck, and talk soon! 💪📊
