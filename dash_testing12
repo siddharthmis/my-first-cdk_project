@@ -1,0 +1,119 @@
+def build_backup_dashboard(data):
+    widgets = []
+    x, y = 0, 0
+
+    if data:
+        data.sort(key=lambda d: (d['AccountName'], d['Region']))
+        total_resources = sum(d['ProtectedCount'] for d in data)
+        widgets.append({
+            "type": "text",
+            "x": 0, "y": y, "width": 24, "height": 5,
+            "properties": {
+                "markdown": f"""# 📦 **BACKUP STATUS OVERVIEW**
+
+---
+🧾 **Total Protected Resources:** `{total_resources}`  
+📊 **Regions Monitored:** `{len(data)}`  
+---"""
+            }
+        })
+        y += 5
+
+    for entry in data:
+        widgets.extend([
+            {
+                "type": "metric", "x": 0, "y": y, "width": 6, "height": 6,
+                "properties": {
+                    "metrics": [["CentralDashboards", "ProtectedResourceCount", "AccountId", entry["AccountId"], "Region", entry["Region"]]],
+                    "view": "gauge", "stat": "Sum", "region": "us-east-1",
+                    "title": f"{entry['AccountName']} [{entry['Region']}] Protected Resources",
+                    "yAxis": {"left": {"min": 0, "max": 1000}}
+                }
+            },
+            {
+                "type": "metric", "x": 6, "y": y, "width": 6, "height": 6,
+                "properties": {
+                    "metrics": [
+                        ["CentralDashboards", "JobStatus", "AccountId", entry["AccountId"], "Region", entry["Region"], "Status", "COMPLETED"],
+                        ["...", "Status", "FAILED"],
+                        ["...", "Status", "RUNNING"],
+                        ["...", "Status", "ABORTED"]
+                    ],
+                    "view": "pie", "stat": "Sum", "region": "us-east-1",
+                    "title": f"{entry['AccountName']} [{entry['Region']}] Job Statuses"
+                }
+            },
+            {
+                "type": "metric", "x": 12, "y": y, "width": 6, "height": 6,
+                "properties": {
+                    "metrics": [["CentralDashboards", "JobHealth", "AccountId", entry["AccountId"], "Region", entry["Region"]]],
+                    "view": "gauge", "stat": "Average", "region": "us-east-1",
+                    "title": f"{entry['AccountName']} [{entry['Region']}] Job Health (%)",
+                    "yAxis": {"left": {"min": 0, "max": 100}}
+                }
+            },
+            {
+                "type": "metric", "x": 18, "y": y, "width": 6, "height": 6,
+                "properties": {
+                    "metrics": [["CentralDashboards", "JobStatus", "AccountId", entry["AccountId"], "Region", entry["Region"], "Status", "EXPIRED"]],
+                    "view": "bar", "stat": "Sum", "region": "us-east-1",
+                    "title": f"{entry['AccountName']} [{entry['Region']}] Expired Jobs",
+                    "yAxis": {"left": {"min": 0, "max": 100}}
+                }
+            }
+        ])
+        y += 6
+
+        # Top Failure Reasons
+        reasons = entry.get("Reasons", {})
+        if reasons:
+            top = sorted(reasons.items(), key=lambda x: x[1], reverse=True)[:5]
+            lines = [f"- `{r}`: {c}" for r, c in top]
+            widgets.append({
+                "type": "text", "x": 0, "y": y, "width": 12, "height": 6,
+                "properties": {
+                    "markdown": f"### ❌ Top Failure Reasons\n" + "\n".join(lines)
+                }
+            })
+
+        # Problematic Resources
+        resources = entry.get("ResourceFailures", {})
+        if resources:
+            top = sorted(resources.items(), key=lambda x: x[1], reverse=True)[:5]
+            lines = [f"- `{r}`: {c}" for r, c in top]
+            widgets.append({
+                "type": "text", "x": 12, "y": y, "width": 12, "height": 6,
+                "properties": {
+                    "markdown": f"### 📛 Problematic Resources\n" + "\n".join(lines)
+                }
+            })
+
+        y += 6
+
+        # Trend - chunked into max 4 metrics per widget
+        trend = entry.get("Trend", {})
+        if trend:
+            chunks = []
+            chunk = []
+            for day, count in sorted(trend.items()):
+                chunk.append(["CustomBackupNamespace", "BackupJobs", "Date", day, {"value": count}])
+                if len(chunk) == 4:
+                    chunks.append(chunk)
+                    chunk = []
+            if chunk:
+                chunks.append(chunk)
+
+            for trend_chunk in chunks:
+                widgets.append({
+                    "type": "metric", "x": 0, "y": y, "width": 24, "height": 6,
+                    "properties": {
+                        "metrics": trend_chunk,
+                        "view": "timeSeries",
+                        "stat": "Sum",
+                        "region": "us-east-1",
+                        "title": f"{entry['AccountName']} [{entry['Region']}] Backup Job Trend"
+                    }
+                })
+                y += 6
+
+    return json.dumps({"widgets": widgets})
