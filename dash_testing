@@ -1,3 +1,11 @@
+"sts:AssumeRole",
+    "organizations:ListAccounts",
+    "cloudwatch:PutDashboard",
+    "cloudwatch:PutMetricData",
+    "ssm:DescribeInstancePatchStates",
+    "backup:ListProtectedResources"
+
+
 Complete Multi-Region Code
 📁 lambda_function.py
 python
