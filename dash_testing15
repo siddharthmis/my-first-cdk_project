@@ -1,0 +1,206 @@
+import json
+
+def y_axis_percent():
+    return {"left": {"min": 0, "max": 100}, "right": {"showUnits": False}}
+
+def y_axis_count(max_val=1000):
+    return {"left": {"min": 0, "max": max_val}, "right": {"showUnits": False}}
+
+def build_patch_dashboard(data):
+    widgets = []
+    y = 0
+
+    if data:
+        data.sort(key=lambda d: (d['AccountName'], d['Region']))
+        avg_percent = round(sum(d['Percent'] for d in data) / len(data), 2)
+        avg_lag = round(sum(d['PatchLagDays'] for d in data) / len(data), 2)
+        widgets.append({
+            "type": "text", "x": 0, "y": y, "width": 24, "height": 4,
+            "properties": {
+                "markdown": f"""# 🛡️ **PATCH COMPLIANCE SUMMARY**
+
+---
+✅ **Avg Compliance**: `{avg_percent}%`  
+⏱️ **Avg Patch Lag**: `{avg_lag} days`  
+---"""
+            }
+        })
+        y += 4
+
+    for entry in data:
+        title = f"{entry['AccountName']} - {entry['Region']}"
+        widgets.append({
+            "type": "text", "x": 0, "y": y, "width": 24, "height": 2,
+            "properties": {"markdown": f"### 🔹 **{title}**"}
+        })
+        y += 2
+
+        widgets.extend([
+            {
+                "type": "metric", "x": 0, "y": y, "width": 6, "height": 6,
+                "properties": {
+                    "metrics": [["CentralDashboards", "PatchCompliance", "AccountId", entry["AccountId"], "Region", entry["Region"]]],
+                    "view": "gauge", "stat": "Average", "region": "us-east-1",
+                    "title": "Patch Compliance %",
+                    "yAxis": y_axis_percent()
+                }
+            },
+            {
+                "type": "metric", "x": 6, "y": y, "width": 6, "height": 6,
+                "properties": {
+                    "metrics": [["CentralDashboards", "PatchLagDays", "AccountId", entry["AccountId"], "Region", entry["Region"]]],
+                    "view": "gauge", "stat": "Average", "region": "us-east-1",
+                    "title": "Avg Patch Lag",
+                    "yAxis": y_axis_count(60)
+                }
+            },
+            {
+                "type": "metric", "x": 12, "y": y, "width": 6, "height": 6,
+                "properties": {
+                    "metrics": [["CentralDashboards", "SSMManagedPercent", "AccountId", entry["AccountId"], "Region", entry["Region"]]],
+                    "view": "gauge", "stat": "Average", "region": "us-east-1",
+                    "title": "SSM Reporting (%)",
+                    "yAxis": y_axis_percent()
+                }
+            },
+            {
+                "type": "metric", "x": 18, "y": y, "width": 6, "height": 6,
+                "properties": {
+                    "metrics": [["CentralDashboards", "NonCompliantEC2Count", "AccountId", entry["AccountId"], "Region", entry["Region"]]],
+                    "view": "singleValue", "stat": "Sum", "region": "us-east-1",
+                    "title": "Noncompliant EC2s",
+                    "yAxis": y_axis_count(100)
+                }
+            }
+        ])
+        y += 6
+
+    return json.dumps({"widgets": widgets})
+
+
+def build_backup_dashboard(data):
+    widgets = []
+    y = 0
+
+    if data:
+        data.sort(key=lambda d: (d['AccountName'], d['Region']))
+        total_resources = sum(d['ProtectedCount'] for d in data)
+        widgets.append({
+            "type": "text", "x": 0, "y": y, "width": 24, "height": 4,
+            "properties": {
+                "markdown": f"""# 📦 **BACKUP SUMMARY**
+
+---
+🔐 **Protected Resources**: `{total_resources}`  
+---"""
+            }
+        })
+        y += 4
+
+    for entry in data:
+        title = f"{entry['AccountName']} - {entry['Region']}"
+        widgets.append({
+            "type": "text", "x": 0, "y": y, "width": 24, "height": 2,
+            "properties": {"markdown": f"### 🔹 **{title}**"}
+        })
+        y += 2
+
+        # Job Status Pie – limit to 4 statuses
+        job_stats = entry.get("JobStats", {})
+        status_metrics = []
+        for status in list(job_stats.keys())[:4]:  # cap to 4
+            status_metrics.append(["CentralDashboards", "JobStatus", "AccountId", entry["AccountId"],
+                                   "Region", entry["Region"], "Status", status])
+
+        widgets.extend([
+            {
+                "type": "metric", "x": 0, "y": y, "width": 6, "height": 6,
+                "properties": {
+                    "metrics": [["CentralDashboards", "ProtectedResourceCount", "AccountId", entry["AccountId"],
+                                 "Region", entry["Region"]]],
+                    "view": "gauge", "stat": "Sum", "region": "us-east-1",
+                    "title": "Protected Resources",
+                    "yAxis": y_axis_count(1000)
+                }
+            },
+            {
+                "type": "metric", "x": 6, "y": y, "width": 6, "height": 6,
+                "properties": {
+                    "metrics": status_metrics,
+                    "view": "pie", "stat": "Sum", "region": "us-east-1",
+                    "title": "Job Status Breakdown"
+                }
+            },
+            {
+                "type": "metric", "x": 12, "y": y, "width": 6, "height": 6,
+                "properties": {
+                    "metrics": [["CentralDashboards", "JobHealth", "AccountId", entry["AccountId"], "Region", entry["Region"]]],
+                    "view": "gauge", "stat": "Average", "region": "us-east-1",
+                    "title": "Job Health (%)",
+                    "yAxis": y_axis_percent()
+                }
+            },
+            {
+                "type": "metric", "x": 18, "y": y, "width": 6, "height": 6,
+                "properties": {
+                    "metrics": [["CentralDashboards", "JobStatus", "AccountId", entry["AccountId"], "Region", entry["Region"], "Status", "EXPIRED"]],
+                    "view": "bar", "stat": "Sum", "region": "us-east-1",
+                    "title": "Expired Jobs",
+                    "yAxis": y_axis_count(100)
+                }
+            }
+        ])
+        y += 6
+
+        # Top reasons and failures
+        reasons = entry.get("Reasons", {})
+        if reasons:
+            lines = [f"- `{r}`: {c}" for r, c in sorted(reasons.items(), key=lambda x: x[1], reverse=True)[:5]]
+            widgets.append({
+                "type": "text", "x": 0, "y": y, "width": 12, "height": 6,
+                "properties": {"markdown": "### ❌ Top Failure Reasons\n" + "\n".join(lines)}
+            })
+
+        resources = entry.get("ResourceFailures", {})
+        if resources:
+            lines = [f"- `{r}`: {c}" for r, c in sorted(resources.items(), key=lambda x: x[1], reverse=True)[:5]]
+            widgets.append({
+                "type": "text", "x": 12, "y": y, "width": 12, "height": 6,
+                "properties": {"markdown": "### 📛 Top Failing Resources\n" + "\n".join(lines)}
+            })
+
+        y += 6
+
+        # Trend - chunked
+        trend = entry.get("Trend", {})
+        chunk = []
+        for i, (day, count) in enumerate(sorted(trend.items())):
+            chunk.append(["CustomBackupNamespace", "BackupJobs", "Date", day, {"value": count}])
+            if len(chunk) == 4:
+                widgets.append({
+                    "type": "metric", "x": 0, "y": y, "width": 24, "height": 6,
+                    "properties": {
+                        "metrics": chunk,
+                        "view": "timeSeries",
+                        "stat": "Sum",
+                        "region": "us-east-1",
+                        "title": "Backup Job Trend"
+                    }
+                })
+                y += 6
+                chunk = []
+
+        if chunk:
+            widgets.append({
+                "type": "metric", "x": 0, "y": y, "width": 24, "height": 6,
+                "properties": {
+                    "metrics": chunk,
+                    "view": "timeSeries",
+                    "stat": "Sum",
+                    "region": "us-east-1",
+                    "title": "Backup Job Trend (cont'd)"
+                }
+            })
+            y += 6
+
+    return json.dumps({"widgets": widgets})
