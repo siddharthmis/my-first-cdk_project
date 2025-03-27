@@ -18,3 +18,7 @@ widgets.insert(0, {
         "markdown": "# ✅ TEXT WIDGET TEST\nThis should be visible at the top."
     }
 })
+
+
+print(f"Top reasons for {account_id} in {region}: {reasons}")
+print(f"Top failing resources for {account_id} in {region}: {resource_failures}")
