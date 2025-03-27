@@ -1,0 +1,10 @@
+# Top Failure Reasons (TEST WIDGET)
+reasons = entry.get("Reasons", {})
+if reasons:
+    widgets.append({
+        "type": "text", "x": 0, "y": y, "width": 12, "height": 6,
+        "properties": {
+            "markdown": f"### ❌ Top Failure Reasons\n- DEBUG: {len(reasons)} reasons"
+        }
+    })
+    y += 6
