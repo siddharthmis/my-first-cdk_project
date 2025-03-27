@@ -1,3 +1,48 @@
+from datetime import timedelta
+
+...
+
+    start_time = datetime.now(timezone.utc) - timedelta(hours=6)
+    paginator = backup.get_paginator('list_backup_jobs')
+    job_iterator = paginator.paginate(
+        ByCreatedAfter=start_time
+    )
+
+    failed = 0
+    completed = 0
+    job_stats = {}
+    reasons = {}
+    resource_failures = {}
+    job_trend = {}
+    now = datetime.now(timezone.utc)
+
+    for page in job_iterator:
+        for job in page.get('BackupJobs', []):
+            status = job.get('State')
+            reason = job.get('StatusMessage', 'Unknown')
+            resource = job.get('ResourceArn', 'Unknown')
+            start = job.get('CreationDate')
+            date_key = start.strftime('%Y-%m-%d') if start else 'unknown'
+
+            if status == 'FAILED':
+                failed += 1
+                reasons[reason] = reasons.get(reason, 0) + 1
+                resource_failures[resource] = resource_failures.get(resource, 0) + 1
+            elif status == 'COMPLETED':
+                completed += 1
+
+            job_stats[status] = job_stats.get(status, 0) + 1
+            job_trend[date_key] = job_trend.get(date_key, 0) + 1
+
+            publish_backup_job_status(account_id, region, status)
+
+    job_health = round((completed / max(completed + failed, 1)) * 100, 2)
+
+    if reasons or resource_failures:
+        publish_backup_failures(account_id, region, reasons, resource_failures)
+
+************************************************************************
+
 if status == "EXPIRED":
     print(f"[DEBUG] EXPIRED job in {account_id}/{region}")
 
