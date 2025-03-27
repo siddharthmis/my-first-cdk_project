@@ -1,0 +1,26 @@
+patch_metrics.append({
+    'AccountId': account_id,
+    'AccountName': account_name,
+    'Region': region,
+    'TotalEC2': len(ec2_instance_ids),
+    'SSMManaged': managed,
+    'SSMUnmanaged': unmanaged,
+    'PercentManaged': percent_managed,
+    'Compliance': {
+        'Compliant': compliant,
+        'Critical': critical,
+        'High': high,
+        'Other': other
+    },
+    'PatchExceptions': {
+        'Missing': missing,
+        'Failed': failed,
+        'RebootPending': reboot
+    },
+    'ComplianceRecency': {
+        'Within7Days': within_7d,
+        'NotWithin7Days': not_within_7d,
+        'NeverReported': never
+    },
+    'OSCompliance': os_compliance_percent
+})
