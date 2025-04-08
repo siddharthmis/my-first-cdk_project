@@ -1,0 +1,36 @@
+Option 1: Get direct and nested group membership
+powershell
+Copy
+Edit
+Get-ADUser -Identity "username" -Properties MemberOf | Select-Object -ExpandProperty MemberOf
+This gets the direct group memberships only.
+
+✅ Option 2: Get all groups including nested ones
+To get all groups (direct and nested), use:
+
+powershell
+Copy
+Edit
+Get-ADUser -Identity "username" | Get-ADPrincipalGroupMembership | Select-Object Name
+This is typically the recommended approach as it also includes groups the user is a member of via nesting.
+
+🛠️ Example with domain-qualified name:
+powershell
+Copy
+Edit
+Get-ADUser -Identity "jdoe" | Get-ADPrincipalGroupMembership | Select-Object Name, DistinguishedName
+🔍 If you don’t have the Active Directory module:
+Make sure the RSAT tools are installed. You can install the AD module on Windows 10+ via:
+
+powershell
+Copy
+Edit
+Add-WindowsFeature RSAT-AD-PowerShell  # On Server
+Or on Windows 10/11:
+
+powershell
+Copy
+Edit
+# If using PowerShell 5.1+ and you're on Windows 10/11
+Get-WindowsCapability -Name RSAT.ActiveDirectory* -Online | Add-WindowsCapability -Online
+Let me know if you also need to check group membership of users across a domain, or need to export the list to CSV, etc.
