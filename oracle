@@ -1,3 +1,29 @@
+def check_snapshot_exists(url, auth, app_name):
+    try:
+        resp = requests.get(url, auth=auth, timeout=30)
+        resp.raise_for_status()
+        snapshots = resp.json().get('items', [])
+
+        for snap in snapshots:
+            if snap.get('name') == 'Artifact Snapshot':
+                size_bytes = snap.get('size', 0)
+                size_mb = round(size_bytes / (1024 * 1024), 2)
+                created_time = snap.get('createdTime', 'N/A')
+                print(f"[{app_name}] Backup found.")
+                print(f"[{app_name}] Size: {size_mb} MB")
+                print(f"[{app_name}] Created Time: {created_time}")
+                return True
+
+        print(f"[{app_name}] 'Artifact Snapshot' not found in the snapshot list.")
+        return False
+
+    except Exception as e:
+        print(f"[{app_name}] Error checking snapshots: {e}")
+        return False
+
+
+###########################3
+
 Yes, I can help you build this end-to-end automation. Here's a high-level breakdown of what we'll implement:
 
 ✅ Architecture Overview
