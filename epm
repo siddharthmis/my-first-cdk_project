@@ -1,0 +1,245 @@
+make the S3 script path dynamic per APP_NAME
+And once done, provide me complete files, both buildspec and codebuild_script
+
+
+ChatGPT said:
+Absolutely — here’s the final setup with the following updates:
+
+✅ What's New
+The codebuild_script.py S3 path is now dynamic per APP_NAME
+
+You'll upload:
+
+codebuild_script.py for FCC → s3://your-script-bucket/FCC/codebuild_script.py
+
+codebuild_script.py for PBCS → s3://your-script-bucket/PBCS/codebuild_script.py
+
+✅ Final buildspec.yml
+yaml
+Copy
+Edit
+version: 0.2
+
+env:
+  variables:
+    APP_NAME: ""                     # FCC or PBCS
+    BACKUP_DATE: ""                 # dd_mm_yyyy
+    ORACLE_SECRET_NAME: "oracle/backup/credentials"
+    S3_BUCKET_NAME: "your-backup-bucket"
+    SCRIPT_BUCKET: "your-script-bucket-name"
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.11
+    commands:
+      - echo "Installing dependencies..."
+      - pip install boto3 requests
+
+  pre_build:
+    commands:
+      - echo "Fetching dynamic codebuild_script.py for $APP_NAME..."
+      - export SCRIPT_KEY="$APP_NAME/codebuild_script.py"
+      - echo "Downloading from s3://$SCRIPT_BUCKET/$SCRIPT_KEY"
+      - aws s3 cp s3://$SCRIPT_BUCKET/$SCRIPT_KEY codebuild_script.py
+
+  build:
+    commands:
+      - echo "Running backup script for $APP_NAME on $BACKUP_DATE"
+      - python codebuild_script.py
+✅ Final codebuild_script.py
+This script stays the same — here’s the version that:
+
+Downloads Oracle backup
+
+Uploads to S3
+
+Uses credentials from Secrets Manager
+
+python
+Copy
+Edit
+import os
+import boto3
+import requests
+from datetime import datetime
+
+# Env vars
+APP_NAME = os.getenv("APP_NAME")               # FCC or PBCS
+BACKUP_DATE = os.getenv("BACKUP_DATE")         # dd_mm_yyyy
+SECRET_NAME = os.getenv("ORACLE_SECRET_NAME")  # e.g., oracle/backup/credentials
+S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")   # S3 bucket to store backup
+
+oracle_urls = {
+    "FCC": "https://resolutionlifegroup-test.resolutionlifegroup.epm.us-phoenix-1.ocs.oraclecloud.com",
+    "PBCS": "https://rlplan2-resolutionlifegroup.epm.us-phoenix-1.ocs.oraclecloud.com"
+}
+
+def get_credentials():
+    client = boto3.client("secretsmanager")
+    secret = client.get_secret_value(SecretId=SECRET_NAME)
+    creds = eval(secret["SecretString"])  # Or use json.loads if stored as JSON
+    return creds["username"], creds["password"]
+
+def download_snapshot(base_url, auth):
+    snapshot_name = "Artifact Snapshot"
+    download_url = f"{base_url}/interop/rest/11.1.2.3.600/applicationsnapshots/{snapshot_name}/download"
+    filename = f"{snapshot_name}_{APP_NAME}_{BACKUP_DATE}.zip"
+
+    headers = {"Content-Type": "application/json"}
+    print(f"[{APP_NAME}] Downloading snapshot from {download_url}")
+
+    with requests.get(download_url, auth=auth, headers=headers, stream=True, timeout=60) as r:
+        r.raise_for_status()
+        with open(filename, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+    print(f"[{APP_NAME}] Snapshot downloaded and saved as {filename}")
+    return filename
+
+def upload_to_s3(file_path):
+    if not S3_BUCKET_NAME:
+        raise ValueError("S3_BUCKET_NAME environment variable not set.")
+
+    s3 = boto3.client("s3")
+    key = f"oracle-backups/{APP_NAME}/{os.path.basename(file_path)}"
+    print(f"Uploading {file_path} to s3://{S3_BUCKET_NAME}/{key}")
+    s3.upload_file(file_path, S3_BUCKET_NAME, key)
+    print(f"[✅] Uploaded to S3: s3://{S3_BUCKET_NAME}/{key}")
+
+def main():
+    if APP_NAME not in oracle_urls:
+        raise ValueError("Invalid APP_NAME provided")
+
+    base_url = oracle_urls[APP_NAME]
+    username, password = get_credentials()
+    auth = (username, password)
+
+    try:
+        file_path = download_snapshot(base_url, auth)
+        upload_to_s3(file_path)
+    except Exception as e:
+        print(f"[❌] Error during {APP_NAME} backup: {e}")
+        raise
+
+if __name__ == "__main__":
+    main()
+✅ Next Steps for You:
+Upload your script to S3 per app:
+
+bash
+Copy
+Edit
+aws s3 cp codebuild_script.py s3://your-script-bucket/FCC/codebuild_script.py
+aws s3 cp codebuild_script.py s3://your-script-bucket/PBCS/codebuild_script.py
+Trigger CodeBuild via Lambda with APP_NAME, BACKUP_DATE, SCRIPT_BUCKET, and S3_BUCKET_NAME as env overrides.
+
+Let me know if you'd like:
+
+The Lambda to wait and check CodeBuild result
+
+To append the S3 upload location to the SES email
+
+You're almost production-ready! 🏁
+
+
+
+
+
+
+You said:
+that comes later.
+when triggering the codebuild from lambda, I am getting an error - SSL validation failed for https://codebuild.us-east-1.amazonaws.com/ even though I am passing the certificate.
+
+
+ChatGPT said:
+Got it — you're seeing this error when triggering CodeBuild from Lambda:
+
+❌ SSL validation failed for https://codebuild.us-east-1.amazonaws.com/
+
+This usually comes down to one of the following:
+
+🔍 Root Causes & Fixes
+✅ 1. Outdated certifi or botocore in your Lambda deployment package
+If you're packaging Lambda yourself (e.g., with layers or a zip), and including boto3 or botocore, they might have outdated CA certificates.
+
+✅ Fix:
+Do NOT bundle boto3 or botocore manually — use the preinstalled AWS SDK in the Lambda runtime.
+
+If you must bundle (e.g., custom runtime or local use):
+
+bash
+Copy
+Edit
+pip install --upgrade boto3 botocore certifi
+✅ 2. System clock drift (rare in AWS Lambda, but can break SSL handshakes)
+Double-check you're not overriding system time inside your Lambda code — AWS Lambda auto-syncs time, but tampering with it can break SSL.
+
+✅ 3. Custom verify parameter in boto3.client()
+If you’re passing a cert via boto3.client('codebuild', verify='/path/to/cert.pem'), and the cert is invalid or incorrectly formatted, this can cause SSL validation failure.
+
+✅ Fix:
+Unless absolutely required (e.g., private CA behind proxy), avoid passing verify= manually.
+
+Instead, use:
+
+python
+Copy
+Edit
+codebuild_client = boto3.client("codebuild")
+✅ 4. Lambda layer or Docker image using custom CA bundle
+If you're using a custom container or Lambda layer that sets:
+
+bash
+Copy
+Edit
+REQUESTS_CA_BUNDLE=/path/to/cert.pem
+or
+
+python
+Copy
+Edit
+os.environ["REQUESTS_CA_BUNDLE"] = "/path/to/cert.pem"
+Then the cert must be a full CA chain in .pem format. If not — SSL fails.
+
+🔧 What You Should Do Now
+✅ Check if you are passing verify=... or setting REQUESTS_CA_BUNDLE
+
+✅ Ensure you're not packaging your own outdated boto3, botocore, or certifi
+
+✅ Try a quick test: add this to Lambda temporarily to see actual CA cert path:
+
+python
+Copy
+Edit
+import certifi
+print("Cert path:", certifi.where())
+If it prints something unexpected or invalid — that's the issue.
+
+Bonus: Minimal Safe Way to Trigger CodeBuild from Lambda
+python
+Copy
+Edit
+import boto3
+
+codebuild_client = boto3.client("codebuild")
+
+response = codebuild_client.start_build(
+    projectName="oracle-backup-upload",
+    environmentVariablesOverride=[
+        {"name": "APP_NAME", "value": "FCC", "type": "PLAINTEXT"},
+        {"name": "BACKUP_DATE", "value": "07_04_2025", "type": "PLAINTEXT"},
+        {"name": "S3_BUCKET_NAME", "value": "your-backup-bucket", "type": "PLAINTEXT"},
+        {"name": "SCRIPT_BUCKET", "value": "your-script-bucket", "type": "PLAINTEXT"}
+    ]
+)
+
+print("Triggered CodeBuild build ID:", response["build"]["id"])
+Let me know how you're deploying your Lambda (zip, SAM, CDK, container?) — and I can help pinpoint and clean it up fully.
+
+
+
+
+
+
