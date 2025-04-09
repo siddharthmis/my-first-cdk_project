@@ -62,4 +62,43 @@ def download_snapshot(base_url, auth, encoded_name):
     download_url = f"{base_url}/epm/rest/v2/applicationsnapshots/{encoded_name}/download"
     filename = f"Artifact Snapshot_{APP_NAME}_{BACKUP_DATE}.zip"
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    print(f"[{APP_NAME}] Downloading snapshot:_
+    print(f"[{APP_NAME}] Downloading snapshot: {download_url}")
+
+    with requests.get(download_url, auth=auth, headers=headers, stream=True, timeout=60) as r:
+        r.raise_for_status()
+        with open(filename, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+    print(f"[{APP_NAME}] Snapshot downloaded and saved as {filename}")
+    return filename
+
+def upload_to_s3(file_path):
+    if not S3_BUCKET_NAME:
+        raise ValueError("S3_BUCKET_NAME environment variable not set.")
+    
+    s3 = boto3.client("s3")
+    key = f"oracle-backups/{APP_NAME}/{os.path.basename(file_path)}"
+    print(f"[{APP_NAME}] Uploading to s3://{S3_BUCKET_NAME}/{key}")
+    s3.upload_file(file_path, S3_BUCKET_NAME, key)
+    print(f"[✅] Uploaded to S3: s3://{S3_BUCKET_NAME}/{key}")
+
+def main():
+    if APP_NAME not in oracle_urls:
+        raise ValueError("Invalid APP_NAME provided")
+
+    base_url = oracle_urls[APP_NAME]
+    username, password = get_credentials()
+    auth = (username, password)
+
+    try:
+        encoded_name = export_snapshot(base_url, auth)
+        wait_for_export(base_url, auth, encoded_name)
+        file_path = download_snapshot(base_url, auth, encoded_name)
+        upload_to_s3(file_path)
+    except Exception as e:
+        print(f"[❌] Error during {APP_NAME} backup: {e}")
+        raise
+
+if __name__ == "__main__":
+    main()
