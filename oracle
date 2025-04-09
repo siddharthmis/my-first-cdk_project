@@ -1,3 +1,12 @@
+created_raw = snap.get('createdTime', 'N/A')
+                if created_raw and created_raw.isdigit():
+                    created_dt = datetime.utcfromtimestamp(int(created_raw) / 1000.0)
+                    created_str = created_dt.strftime('%Y-%m-%d %H:%M:%S UTC')
+                else:
+                    created_str = created_raw
+
+#####
+
 def check_snapshot_exists(url, auth, app_name):
     try:
         resp = requests.get(url, auth=auth, timeout=30)
